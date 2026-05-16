@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 import sys
+import time
 
 import click
 from pydantic import ValidationError
@@ -16,6 +19,7 @@ from garuda_tunnel.exceptions import (
     SchemaValidationError,
     exit_code_for,
 )
+from garuda_tunnel.identity import IdentityCheckResult, verify_token
 from garuda_tunnel.schemas import InputSchema
 
 
@@ -90,6 +94,103 @@ def start_command() -> None:
         sys.stdout.write("\n")
         sys.stdout.flush()
         sys.exit(4)
+
+
+@main.command("stop")
+@click.option("--pid", type=int, required=True)
+@click.option("--token", type=str, required=True)
+@click.option("--grace-seconds", type=int, default=10, show_default=True)
+def stop_command(pid: int, token: str, grace_seconds: int) -> None:
+    """Send SIGTERM (then SIGKILL) to a garuda-tunnel daemon identified by PID+token."""
+    if not _kill_with_identity(pid, token, grace_seconds, force=True):
+        sys.exit(0)
+
+
+@main.command("status")
+@click.option("--pid", type=int, required=True)
+@click.option("--token", type=str, default=None)
+def status_command(pid: int, token: str | None) -> None:
+    """Report whether the daemon with the given PID (and optional token) is alive."""
+    alive = _is_alive(pid, token)
+    sys.stdout.write(json.dumps({"alive": alive}))
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
+
+def _is_alive(pid: int, token: str | None) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        if token is None:
+            return True
+        # Fall through to verify_token; it owns the with-token answer.
+    if token is None:
+        return True
+    return verify_token(pid, token) == IdentityCheckResult.match
+
+
+def _kill_with_identity(pid: int, token: str, grace_seconds: int, *, force: bool) -> bool:
+    check = verify_token(pid, token)
+    if check == IdentityCheckResult.not_found:
+        sys.stdout.write(json.dumps({"stopped": False, "reason": "not found"}))
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        return False
+    if check == IdentityCheckResult.mismatch:
+        sys.stdout.write(json.dumps({"stopped": False, "reason": "token mismatch"}))
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        return False
+    if check == IdentityCheckResult.unavailable:
+        sys.stdout.write(json.dumps({"stopped": False, "reason": "identity check unavailable"}))
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        return False
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        sys.stdout.write(json.dumps({"stopped": True}))
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        return True
+
+    deadline = time.monotonic() + max(0, grace_seconds)
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            sys.stdout.write(json.dumps({"stopped": True}))
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            return True
+        time.sleep(0.5)
+
+    if not force:
+        sys.stdout.write(json.dumps({"stopped": False, "reason": "still alive"}))
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        return False
+
+    recheck = verify_token(pid, token)
+    if recheck != IdentityCheckResult.match:
+        sys.stdout.write(json.dumps({"stopped": False, "reason": "identity changed during grace"}))
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        return False
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        sys.stdout.write(json.dumps({"stopped": True}))
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        return True
+    sys.stdout.write(json.dumps({"stopped": True, "forced": True}))
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+    return True
 
 
 if __name__ == "__main__":  # pragma: no cover
