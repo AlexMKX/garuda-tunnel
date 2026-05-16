@@ -873,10 +873,20 @@ git commit -m "feat: PID+token identity check for safe stop/status"
 **Files:**
 - Create: `garuda_tunnel/manager.py`
 - Create: `tests/unit/test_manager_pkey.py`
+- Modify: `pyproject.toml` (add a narrow mypy override for paramiko/sshtunnel; see Step 5)
 
 The `start_all()` behavior involving real SSH connections is exercised by the integration tests in Task 9. Unit tests here cover only the in-memory PEM loader, because that path is purely a function of the input.
 
 - [ ] **Step 1: Write failing unit tests for PEM loading**
+
+> **Why `cryptography` for Ed25519 generation:** Paramiko 4.x (which we pin
+> via `paramiko>=4.0,<5`) does not expose `paramiko.Ed25519Key.generate`.
+> RSA and ECDSA still have `.generate(...)` classmethods. To keep the
+> "real key, no mocks" test discipline, the Ed25519 branch generates the
+> key via `cryptography.hazmat.primitives.asymmetric.ed25519.Ed25519PrivateKey`
+> and serializes to OpenSSH PEM, which `paramiko.Ed25519Key.from_private_key`
+> round-trips cleanly. `cryptography` is already a transitive dependency
+> of paramiko, so no pyproject change is required for this.
 
 `tests/unit/test_manager_pkey.py`:
 
@@ -894,8 +904,18 @@ from garuda_tunnel.manager import load_inline_pkey
 
 def _generate_pem(key_type: str) -> str:
     if key_type == "ed25519":
-        key = paramiko.Ed25519Key.generate()
-    elif key_type == "rsa":
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+            Ed25519PrivateKey,
+        )
+
+        priv = Ed25519PrivateKey.generate()
+        return priv.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.OpenSSH,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode()
+    if key_type == "rsa":
         key = paramiko.RSAKey.generate(bits=2048)
     elif key_type == "ecdsa":
         key = paramiko.ECDSAKey.generate()
@@ -1147,9 +1167,17 @@ class TunnelManager:
 Run: `pytest tests/unit -v`
 Expected: all prior tests still green plus 4 new PEM tests passing.
 
-- [ ] **Step 5: Lint and type-check**
+- [ ] **Step 5: Lint and type-check (with one pyproject change)**
 
-Run:
+Neither `paramiko` nor `sshtunnel` ships type stubs or a `py.typed` marker, so `mypy --strict garuda_tunnel` errors out on `manager.py`'s `import paramiko` / `import sshtunnel` with `[import-untyped]`. Add a narrow override to `pyproject.toml` after the existing `[tool.mypy]` block:
+
+```toml
+[[tool.mypy.overrides]]
+module = ["paramiko", "paramiko.*", "sshtunnel", "sshtunnel.*"]
+ignore_missing_imports = true
+```
+
+Then run:
 
 ```bash
 ruff format --check .
@@ -1162,7 +1190,7 @@ Expected: green. If `Exception` catches trip ruff `BLE001`, the `# noqa: BLE001`
 - [ ] **Step 6: Commit**
 
 ```bash
-git add garuda_tunnel/manager.py tests/unit/test_manager_pkey.py
+git add garuda_tunnel/manager.py tests/unit/test_manager_pkey.py pyproject.toml
 git commit -m "feat: TunnelManager with in-memory PEM loading and concurrent startup"
 ```
 
