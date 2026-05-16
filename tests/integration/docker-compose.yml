@@ -1,0 +1,42 @@
+services:
+  sshd-a:
+    image: lscr.io/linuxserver/openssh-server:latest
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - PUBLIC_KEY_FILE=/keys/id_test.pub
+      - USER_NAME=tester
+      - SUDO_ACCESS=false
+      - PASSWORD_ACCESS=false
+    volumes:
+      - ./_keys:/keys:ro
+    ports:
+      - "127.0.0.1::2222"
+
+  sshd-b:
+    image: lscr.io/linuxserver/openssh-server:latest
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - PUBLIC_KEY_FILE=/keys/id_test.pub
+      - USER_NAME=tester
+      - SUDO_ACCESS=false
+      - PASSWORD_ACCESS=false
+    volumes:
+      - ./_keys:/keys:ro
+    ports:
+      - "127.0.0.1::2222"
+
+  sshd-c:
+    image: lscr.io/linuxserver/openssh-server:latest
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - PUBLIC_KEY_FILE=/keys/id_test.pub
+      - USER_NAME=tester
+      - SUDO_ACCESS=false
+      - PASSWORD_ACCESS=false
+    volumes:
+      - ./_keys:/keys:ro
+    ports:
+      - "127.0.0.1::2222"

@@ -37,3 +37,6 @@ Thumbs.db
 
 # pipx run cache (just in case)
 .pipx/
+
+# Integration test SSH keypair (generated per session)
+tests/integration/_keys/
