@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import os
-import pathlib
 import signal
+import sys
 import time
 
+import pytest
+
 from garuda_tunnel.daemon import spawn_daemon
-from garuda_tunnel.identity import TOKEN_ENV_VAR
+from garuda_tunnel.identity import IdentityCheckResult, verify_token
 from garuda_tunnel.schemas import InputSchema
 
 
@@ -43,11 +45,13 @@ def test_spawn_daemon_returns_worker_pid_and_token_via_ipc() -> None:
         assert _process_alive(pid), "worker process should be alive after IPC handshake"
         assert pid != os.getpid()
         assert token  # opaque non-empty token
-        # The worker process must carry the token in its /proc/<pid>/environ
-        # snapshot, populated by execve. This is the contract that makes
-        # `stop --pid --token` usable.
-        environ_blob = pathlib.Path(f"/proc/{pid}/environ").read_bytes()
-        assert f"{TOKEN_ENV_VAR}={token}".encode() in environ_blob
+        # The worker process must carry the token in its process environment so
+        # that `stop --pid --token` can verify identity. Exercise this via the
+        # public identity API, which probes /proc on Linux and `ps -wwE` on
+        # macOS (the only two platforms the project supports).
+        if sys.platform not in {"linux", "darwin"}:
+            pytest.skip("token identity check only validated on Linux and macOS")
+        assert verify_token(pid, token) == IdentityCheckResult.match
     finally:
         if _process_alive(pid):
             os.kill(pid, signal.SIGTERM)
