@@ -5,8 +5,6 @@ import pathlib
 import signal
 import time
 
-import pytest
-
 from garuda_tunnel.daemon import spawn_daemon
 from garuda_tunnel.identity import TOKEN_ENV_VAR
 from garuda_tunnel.schemas import InputSchema
@@ -57,10 +55,6 @@ def test_spawn_daemon_returns_worker_pid_and_token_via_ipc() -> None:
 
 
 def test_spawn_daemon_propagates_required_failure() -> None:
-    # A required-failure path needs at least one node that will fail. We can
-    # request a node with a bogus host that the worker will attempt to
-    # connect to; SSHTunnelForwarder.start() will raise, and the worker
-    # reports required_failure → parent raises SystemExit(2).
     schema = InputSchema.model_validate(
         {
             "nodes": {
@@ -75,6 +69,7 @@ def test_spawn_daemon_propagates_required_failure() -> None:
             }
         }
     )
-    with pytest.raises(SystemExit) as excinfo:
-        spawn_daemon(schema)
-    assert excinfo.value.code == 2
+    message = spawn_daemon(schema)
+    assert message["kind"] == "required_failure"
+    payload = message["payload"]
+    assert payload["error"] == "RequiredTunnelFailure"

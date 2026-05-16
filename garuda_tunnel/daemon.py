@@ -16,9 +16,12 @@ from garuda_tunnel.schemas import InputSchema
 def spawn_daemon(schema: InputSchema) -> dict[str, Any]:
     """Fork twice, execve into the worker, return the worker's IPC message.
 
-    Raises ``SystemExit(2)`` if the worker reports required tunnel failure.
-    Raises ``SystemExit(4)`` if the worker reports a daemon error.
-    Raises ``DaemonError`` if the parent itself cannot complete the handshake.
+    Returns the structured IPC message for any of the three worker outcomes:
+    ``success``, ``required_failure``, ``daemon_error``. Callers dispatch on
+    ``message["kind"]`` and map to CLI exit codes.
+
+    Raises ``DaemonError`` only when the parent itself cannot complete the
+    handshake (empty pipe, malformed JSON, unknown kind).
     """
     ipc_read_fd, ipc_write_fd = os.pipe()
     schema_read_fd, schema_write_fd = os.pipe()
@@ -117,10 +120,6 @@ def _parent_wait(read_fd: int, *, child_pid: int) -> dict[str, Any]:
         raise DaemonError("worker IPC produced invalid JSON", {"position": exc.pos}) from exc
 
     kind = message.get("kind")
-    if kind == "success":
+    if kind in {"success", "required_failure", "daemon_error"}:
         return message
-    if kind == "required_failure":
-        raise SystemExit(2)
-    if kind == "daemon_error":
-        raise SystemExit(4)
     raise DaemonError("unexpected IPC message kind", {"kind": str(kind)})
