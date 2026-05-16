@@ -680,31 +680,71 @@ git commit -m "feat: pydantic schemas for CLI I/O with require and auth validato
 
 - [ ] **Step 1: Write failing tests for identity check**
 
+> **Why a spawned child instead of `monkeypatch.setenv`:** On Linux,
+> `/proc/<pid>/environ` is a snapshot of `envp` taken by the kernel at
+> `execve(2)` time. Mutations via `os.environ` / `setenv(3)` (including
+> `monkeypatch.setenv`) update the libc environment of the running process
+> but do NOT propagate back into the kernel snapshot. So an in-process
+> `monkeypatch.setenv("GARUDA_TUNNEL_TOKEN", ...)` followed by
+> `verify_token(os.getpid(), ...)` always returns `unavailable`, never
+> `match`/`mismatch`. To actually exercise `_read_token_env_linux`, the
+> tests spawn a short-lived child with the token in its `Popen(env=...)`,
+> which is what makes it into `execve`'s `envp` and therefore into
+> `/proc/<child_pid>/environ`. The same pattern works on macOS via `ps -E`.
+
 `tests/unit/test_identity.py`:
 
 ```python
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
+import time
 
 import pytest
 
 from garuda_tunnel.identity import IdentityCheckResult, verify_token
 
 
-def test_match_against_current_process(monkeypatch: pytest.MonkeyPatch) -> None:
-    if sys.platform not in {"linux", "darwin"}:
-        pytest.skip("identity check only validated on Linux and macOS")
-    monkeypatch.setenv("GARUDA_TUNNEL_TOKEN", "abc-123")
-    assert verify_token(os.getpid(), "abc-123") == IdentityCheckResult.match
+def _spawn_sleeper(token: str) -> subprocess.Popen[bytes]:
+    """Spawn a long-lived child carrying ``GARUDA_TUNNEL_TOKEN=token`` in its environ."""
+    env = {**os.environ, "GARUDA_TUNNEL_TOKEN": token}
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        env=env,
+    )
+    # Give the child a brief moment to enter the sleep so /proc/<pid>/environ is populated.
+    for _ in range(50):
+        try:
+            if os.path.exists(f"/proc/{proc.pid}/environ"):
+                break
+        except OSError:
+            pass
+        time.sleep(0.01)
+    return proc
 
 
-def test_mismatch_against_current_process(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_match_against_child_process() -> None:
     if sys.platform not in {"linux", "darwin"}:
         pytest.skip("identity check only validated on Linux and macOS")
-    monkeypatch.setenv("GARUDA_TUNNEL_TOKEN", "abc-123")
-    assert verify_token(os.getpid(), "wrong") == IdentityCheckResult.mismatch
+    proc = _spawn_sleeper("abc-123")
+    try:
+        assert verify_token(proc.pid, "abc-123") == IdentityCheckResult.match
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def test_mismatch_against_child_process() -> None:
+    if sys.platform not in {"linux", "darwin"}:
+        pytest.skip("identity check only validated on Linux and macOS")
+    proc = _spawn_sleeper("abc-123")
+    try:
+        assert verify_token(proc.pid, "wrong") == IdentityCheckResult.mismatch
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
 
 
 def test_not_found_for_unused_pid() -> None:
