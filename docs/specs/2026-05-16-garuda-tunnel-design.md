@@ -50,9 +50,10 @@ scenario.
    policies, timeouts), threaded mode.
 
 5. **Orchestrator-friendly lifecycle**: `start` daemonizes and returns
-   metadata immediately; `stop --pid` cleanly tears down; `status --pid`
-   reports liveness. Suitable for Terragrunt `before_hook`/`after_hook`
-   wrapping or any external supervisor with PID-based control.
+   metadata immediately; `stop --pid --token` cleanly tears down;
+   `status --pid [--token]` reports liveness. Suitable for Terragrunt
+   `before_hook`/`after_hook` wrapping or any external supervisor with
+   PID-based control.
 
 6. **Schema-validated I/O**: pydantic models for input/output, validation
    errors return structured JSON to stdout with non-zero exit. No "garbage
@@ -89,8 +90,8 @@ scenario.
   entries in `connections` plus `pid`.
 - `start` completes within 60 seconds for 10-node bootstrap (best-effort
   expectation, not enforced by tests).
-- `stop --pid N` kills daemon, all tunnels cleaned, exit 0.
-- `status --pid N` returns `{alive: true/false}`.
+- `stop --pid N --token T` kills daemon, all tunnels cleaned, exit 0.
+- `status --pid N --token T` returns `{alive: true/false}`.
 - `require: "*"` with one unreachable node → exit 2, all started tunnels
   rolled back.
 - `require: ["a", "b"]` with `b` reachable, `c` (optional) unreachable →
@@ -149,10 +150,10 @@ garuda-tunnel/                          (separate git repo)
 
 | Component | Responsibility |
 |---|---|
-| `cli.py` | Click commands; read stdin / write stdout JSON; map exceptions to exit codes. |
+| `cli.py` | Click commands; read stdin / write stdout JSON; remap Click usage errors to exit 64; map domain exceptions to exit codes. |
 | `schemas.py` | Pydantic models: `NodeInput`, `SSHOptions`, `DaemonOptions`, `InputSchema`, `ConnectionEntry`, `TunnelWarning`, `OutputSchema`, `ErrorOutput`. |
-| `manager.py` | `TunnelManager`: holds list of `sshtunnel.SSHTunnelForwarder` instances; `start_all()` opens concurrently via `ThreadPoolExecutor`; aggregates per-node `StartResult`; `stop_all()` for cleanup. |
-| `daemon.py` | `daemonize(log_file)`: POSIX double-fork, redirect stdin/stdout/stderr; `install_signal_handlers()` for SIGTERM/SIGINT; `wait_for_signal()` blocks on `signal.pause()`. |
+| `manager.py` | `TunnelManager`: holds list of `sshtunnel.SSHTunnelForwarder` instances; `start_all()` opens concurrently via `ThreadPoolExecutor`; aggregates per-node `StartResult`; `stop_all()` for cleanup; parses inline PEM keys in memory. |
+| `daemon.py` | `spawn_daemon(schema)`: POSIX double-fork with an IPC pipe; final daemon starts tunnels after fork, sends startup result and final PID to parent, redirects stdin/stdout/stderr, installs SIGTERM/SIGINT handlers, then blocks on `signal.pause()`. |
 | `exceptions.py` | Hierarchy: `GarudaTunnelError` → `SchemaValidationError`, `TunnelStartupError`, `RequiredTunnelFailure`, `DaemonError`. Each maps to a specific exit code. |
 | `__main__.py` | `python -m garuda_tunnel` → `cli.main()`. |
 | `__init__.py` | Exports `__version__` from `importlib.metadata`. No public Python API. |
@@ -160,71 +161,94 @@ garuda-tunnel/                          (separate git repo)
 ### Data flow: `start`
 
 ```
-caller                                     daemon process
-------                                     --------------
+caller                                      final daemon process
+------                                      --------------------
 1. echo $INPUT | garuda-tunnel start
 2.   cli.start():
        parse stdin → dict
        schemas.InputSchema.model_validate
        (validation error → exit 1, JSON error to stdout)
-       
-3.   manager = TunnelManager(schema)
-4.   results = manager.start_all()        # ThreadPoolExecutor, up to 10 workers
-       for each node:
-         SSHTunnelForwarder(...)
-         tunnel.start()
-         verify socket.connect_ex(local_port) succeeds
-         record ConnectionEntry list
-       on per-node failure: StartResult.error
-       
-5.   required_failed = [n for n in results if n in required and failed]
-       if required_failed:
-         manager.stop_all()
-         output {error, message, details}
-         exit 2
-       
-6.   build OutputSchema:
-       connections = {n: r.connections for n in results if success}
-       warnings = [(n, err) for n in results if optional+failed]
-       pid = os.getpid()
-       started_at = utcnow().isoformat() + "Z"
-       
-7.   print(output.model_dump_json())
-     sys.stdout.flush()
-     
-8.   daemon.daemonize(log_file)             ─┐
-     ├── first fork: parent exits 0          │ caller's `garuda-tunnel start`
-     ├── setsid                              │ subprocess returns here
-     ├── second fork: session leader exits   │ with exit code 0
-     ├── redirect stdin/stdout/stderr        │
-     └── continue as detached daemon       ──┘
+
+3.   create IPC pipe (read_fd, write_fd)
+4.   first fork:
+       parent keeps read_fd and waits for one JSON message
+       child continues
+5.   child: setsid(); second fork
+       session leader exits 0
+       final daemon continues with write_fd
                                               ↓
-9.                                          install SIGTERM/SIGINT handlers
-                                            signal.pause()                    ←── waits forever
-                                            
-caller resumes:                              
-   read stdout JSON                          
-   pid = json["pid"]                         
-   ... do work using tunnels ...             
-   
-N. garuda-tunnel stop --pid PID    ─────→   SIGTERM received
-                                            handler:
-                                              manager.stop_all()   ─────→ close all SSHTunnelForwarder
-                                              sys.exit(0)
-                                            daemon exits
+6.                                           redirect stdin/stdout/stderr
+                                             (write_fd stays open)
+7.                                           manager = TunnelManager(schema)
+8.                                           results = manager.start_all()
+                                               # ThreadPoolExecutor, up to 10 workers
+                                               for each node:
+                                                 parse inline PEM in memory if provided
+                                                 SSHTunnelForwarder(...)
+                                                 tunnel.start()
+                                                 verify socket.connect_ex(local_port)
+                                                 record ConnectionEntry list
+                                               on per-node failure: StartResult.error
+
+9.                                           required_failed = [n for n in results
+                                               if n in required and failed]
+                                             if required_failed:
+                                               manager.stop_all()
+                                               write ErrorOutput to IPC
+                                               exit 2
+
+10.                                          build OutputSchema:
+                                               connections = successful results
+                                               warnings = optional failures
+                                               pid = os.getpid()  # final daemon PID
+                                               token = runtime_token
+                                               started_at = utcnow().isoformat() + "Z"
+                                             write OutputSchema to IPC
+                                             close write_fd
+11.                                          install SIGTERM/SIGINT handlers
+                                             signal.pause()                    ←── waits forever
+
+12.  parent reads IPC JSON:
+       if success:
+         print OutputSchema to stdout
+         exit 0
+       if daemon reported required failure:
+         print ErrorOutput to stdout
+         exit 2
+       if daemon failed before reporting:
+         print DaemonError to stdout
+         exit 4
+
+caller resumes:
+   read stdout JSON
+   pid = json["pid"]
+   token = json["token"]
+   ... do work using tunnels ...
+
+N. garuda-tunnel stop --pid PID --token TOKEN ─────→ SIGTERM received
+                                                   handler:
+                                                     manager.stop_all() ─────→ close all SSHTunnelForwarder
+                                                     sys.exit(0)
+                                                   daemon exits
    stop subprocess returns 0
    {stopped: true}
 ```
 
-**Critical**: the parent process writes the JSON to stdout and flushes
-**before** the first fork. By the time the daemon detaches, the caller has
-already received the output. The daemon then runs silently with stdout
-redirected to the log file (or `/dev/null`).
+**Critical**: the daemon forks before any `SSHTunnelForwarder.start()` call.
+`SSHTunnelForwarder` starts Paramiko and socketserver threads; forking after
+those threads exist is unsafe because only the calling thread survives in the
+child. The final daemon process must create and own all tunnel threads.
+
+**Critical**: the parent process writes stdout only after the final daemon has
+reported its final PID and startup result through the IPC pipe. The PID in
+`OutputSchema` is therefore the PID that `stop` and `status` should target.
 
 ### Concurrency model
 
 **Within a single `start` invocation:**
 
+- Parent process performs only JSON parsing/validation, daemon forking, IPC
+  wait, and stdout output. It never starts SSH tunnels.
 - Tunnel startup is concurrent: `ThreadPoolExecutor(max_workers=min(N, 10))`.
 - Each worker creates one `SSHTunnelForwarder` and calls `.start()`.
   `SSHTunnelForwarder` itself spawns paramiko transport threads.
@@ -267,21 +291,50 @@ All errors also write structured JSON to stdout:
 ### Daemonization (POSIX double-fork)
 
 ```python
-def daemonize(log_file: Path | None) -> None:
-    if os.fork() > 0:
-        os._exit(0)              # first parent
+def spawn_daemon(schema: InputSchema) -> dict:
+    read_fd, write_fd = os.pipe()
+    runtime_token = secrets.token_urlsafe(32)
+
+    first_pid = os.fork()
+    if first_pid > 0:
+        os.close(write_fd)
+        return read_one_json_message(read_fd)  # final daemon PID + startup result
+
     os.setsid()
     os.umask(0)
     if os.fork() > 0:
         os._exit(0)              # session leader
 
+    os.environ["GARUDA_TUNNEL_TOKEN"] = runtime_token
+
     sys.stdout.flush()
     sys.stderr.flush()
 
+    log_file = schema.daemon.log_file
     target = open(log_file, "ab", buffering=0) if log_file else open(os.devnull, "ab")
     os.dup2(open(os.devnull, "rb").fileno(), sys.stdin.fileno())
     os.dup2(target.fileno(), sys.stdout.fileno())
     os.dup2(target.fileno(), sys.stderr.fileno())
+
+    # Final daemon process. Start tunnels only after all forks are complete.
+    manager = None
+    try:
+        manager = TunnelManager(schema)
+        startup_result = manager.start_all_and_build_output(
+            pid=os.getpid(),
+            token=runtime_token,
+        )
+        write_json_message(write_fd, startup_result)
+    except RequiredTunnelFailure as exc:
+        if manager is not None:
+            manager.stop_all()
+        write_json_message(write_fd, exc.to_error_output())
+        os._exit(2)
+    finally:
+        os.close(write_fd)
+
+    install_signal_handlers(manager)
+    wait_for_signal()
 ```
 
 ---
@@ -293,8 +346,8 @@ def daemonize(log_file: Path | None) -> None:
 | Command | Reads stdin | Writes stdout | Daemonizes | Purpose |
 |---|---|---|---|---|
 | `start` | Yes (JSON) | Yes (JSON) | Yes | Open tunnels, return mapping, detach. |
-| `stop`  | No          | Yes (JSON) | No  | SIGTERM by PID, escalate to SIGKILL after grace. |
-| `status`| No          | Yes (JSON) | No  | Check if PID is alive. |
+| `stop`  | No          | Yes (JSON) | No  | Verify PID+token identity, SIGTERM, escalate to SIGKILL after grace. |
+| `status`| No          | Yes (JSON) | No  | Check if PID is alive, optionally scoped by token identity. |
 
 ### `start` — input schema
 
@@ -361,6 +414,7 @@ class TunnelWarning(BaseModel):
 class OutputSchema(BaseModel):
     connections: dict[str, list[ConnectionEntry]]
     pid: int
+    token: str                                  # runtime identity token for safe stop/status
     started_at: str                             # ISO 8601 UTC
     warnings: list[TunnelWarning] = []
 ```
@@ -377,7 +431,7 @@ class ErrorOutput(BaseModel):
 ### `stop`
 
 ```
-$ garuda-tunnel stop --pid <PID> [--grace-seconds N]
+$ garuda-tunnel stop --pid <PID> --token <TOKEN> [--grace-seconds N]
 ```
 
 Output (always exit 0, idempotent):
@@ -391,15 +445,27 @@ Output (always exit 0, idempotent):
 Behavior:
 
 1. `os.kill(pid, 0)` → if ProcessLookupError: exit 0 `{stopped: false}`.
-2. `os.kill(pid, SIGTERM)`.
-3. Poll `os.kill(pid, 0)` every 0.5s up to `grace_seconds` (default 10).
-4. If still alive: `os.kill(pid, SIGKILL)`, output `{stopped: true, forced: true}`.
-5. Exit 0.
+2. Verify that the process is a `garuda-tunnel` daemon for the provided token.
+   - Linux: read `/proc/<pid>/environ` and require
+     `GARUDA_TUNNEL_TOKEN=<TOKEN>`.
+   - macOS: use `ps -wwE -p <pid>` and require the same environment marker
+     when available. If the platform cannot verify the token, return
+     `{stopped: false, reason: "identity check unavailable"}` and exit 0;
+     do not kill.
+3. `os.kill(pid, SIGTERM)`.
+4. Poll `os.kill(pid, 0)` every 0.5s up to `grace_seconds` (default 10).
+5. If still alive: re-check identity, then `os.kill(pid, SIGKILL)`, output
+   `{stopped: true, forced: true}`.
+6. Exit 0.
+
+The token prevents killing unrelated processes when a PID is stale, reused, or
+typed incorrectly. The daemon sets `GARUDA_TUNNEL_TOKEN` in its own process
+environment before reporting success through IPC.
 
 ### `status`
 
 ```
-$ garuda-tunnel status --pid <PID>
+$ garuda-tunnel status --pid <PID> [--token <TOKEN>]
 ```
 
 Output:
@@ -409,8 +475,9 @@ Output:
 { "alive": false }
 ```
 
-Behavior: `os.kill(pid, 0)`. No introspection of tunnel internals (no IPC
-channel). Exit 0.
+Behavior: `os.kill(pid, 0)`. If `--token` is provided, also perform the same
+identity check used by `stop`; token mismatch returns `{alive: false}`. No
+introspection of tunnel internals (no IPC channel). Exit 0.
 
 ### Required vs optional semantics
 
@@ -431,9 +498,29 @@ after manager.start_all():
   output OutputSchema(
     connections = {n: r.connections for n in results if r.success},
     warnings    = [TunnelWarning(n, err) for n, err in failed_optional],
+    pid         = os.getpid(),
+    token       = runtime_token,
   )
-  daemonize and wait
+  write output to parent over IPC, then wait for signals
 ```
+
+### Inline PEM handling
+
+`ssh_pkey` is PEM content, not a file path. The implementation must parse it in
+memory and must not write the private key to a temporary file.
+
+Implementation approach:
+
+1. Wrap the PEM string in `io.StringIO`.
+2. Try Paramiko key classes in a deterministic order, for example
+   `Ed25519Key`, `ECDSAKey`, `RSAKey`, `DSSKey` while Paramiko 4 still exposes
+   it.
+3. Pass the parsed key object to `SSHTunnelForwarder` through the appropriate
+   Paramiko/sshtunnel argument rather than passing a path.
+4. If `ssh_pkey` and `ssh_password` are both provided, prefer key auth and keep
+   password available only if `sshtunnel` supports fallback without writing
+   secrets.
+5. Error output must not include the PEM content or password.
 
 ---
 
@@ -457,6 +544,10 @@ Path: `tests/unit/`.
   - `--version` returns 0 with version string.
   - Unknown subcommand → exit 64.
   - `stop --pid <bad-int>` → exit 64.
+
+Click defaults usage errors to exit code 2. The CLI must explicitly remap
+`click.UsageError` / bad parameter errors to exit 64 so the behavior is stable
+and testable.
 
 No mocked manager tests. No mocked daemon tests. Mocks of the
 `sshtunnel`/`paramiko` library produce false confidence. Real behavior is
@@ -490,10 +581,10 @@ or `subprocess.Popen`). They verify real behavior:
 
 - `test_start.py`:
   - `require: "*"` all reachable → exit 0, all in `connections`, daemon
-    alive at returned PID, `socket.create_connection(127.0.0.1, port)`
-    succeeds.
+    alive at returned PID, `token` present, `socket.create_connection(127.0.0.1,
+    port)` succeeds.
   - `require: ["a", "b"]` with `b` having bad SSH key → exit 2, structured
-    error, no orphan daemon (`pgrep garuda-tunnel` empty).
+    error, no orphan daemon among processes started by this pytest run.
   - `require: ["a"]` with `b` (optional) failing → exit 0, `warnings`
     contains `b`, `connections` has `a` only.
   - Schema validation failure (missing `host`) → exit 1, ErrorOutput.
@@ -501,12 +592,15 @@ or `subprocess.Popen`). They verify real behavior:
 - `test_stop.py`:
   - Stop alive daemon → `{stopped: true}`, PID gone, tunnel port refuses
     connection.
+  - Stop alive daemon with wrong token → `{stopped: false, reason: ...}`, PID
+    still alive.
   - Stop already-dead PID → `{stopped: false, reason: "not found"}`.
   - Stop daemon that ignores SIGTERM (simulated via separate test fixture)
     → `{stopped: true, forced: true}` after grace.
 
 - `test_status.py`:
   - Alive daemon → `{alive: true}`.
+  - Alive daemon with wrong token → `{alive: false}`.
   - After stop → `{alive: false}`.
 
 - `test_multiport.py`:
@@ -517,10 +611,19 @@ Autouse cleanup fixture in `tests/conftest.py`:
 
 ```python
 @pytest.fixture(autouse=True)
-def kill_orphan_garuda_tunnel():
+def kill_orphan_test_daemons(started_daemons):
     yield
-    subprocess.run(["pkill", "-f", "garuda-tunnel"], capture_output=True)
+    # Kill only daemons started by this pytest process. The fixture records
+    # (pid, token) pairs returned by successful `start` calls.
+    # Never use pkill -f "garuda-tunnel" because that can kill unrelated local
+    # operator processes on a developer machine.
+    for pid, token in started_daemons:
+        subprocess.run(["garuda-tunnel", "stop", "--pid", str(pid), "--token", token])
 ```
+
+Integration tests keep the `pid` and `token` returned by each production
+`start` call and use those values for targeted cleanup. There is no test-only
+input schema branch for overriding tokens.
 
 Wall clock: ~30 seconds total (5s docker spin-up amortized over session).
 
@@ -693,9 +796,12 @@ plugin's quirks (port binding races, fixture scoping).
 | POSIX double-fork daemonization | Standard pattern. systemd-notify and similar are overkill for our DE use case. |
 | Required-vs-optional via `require: "*" \| list` | Lets caller distinguish critical tunnels (must succeed or abort) from best-effort ones (failure → warning). Default `"*"` is the conservative behavior. |
 | Cleanup all-or-nothing on required failure | Avoids leaking orphan tunnels when the operation as a whole failed. Caller can retry cleanly. |
+| Fork before starting tunnels | `SSHTunnelForwarder.start()` creates Paramiko/socketserver threads. Forking after thread creation is unsafe, so the final daemon must own startup. |
+| Parent/daemon IPC pipe | Lets `start` return the final daemon PID and startup result while keeping stdout clean and machine-readable. |
+| PID plus token for stop/status | PID alone can target an unrelated reused process. A runtime token in the daemon environment gives callers a stateless identity check. |
 | Real Docker-based integration tests over mocks | Mocks of `sshtunnel`/`paramiko` give false confidence. Containerized `openssh-server + iperf3` exercises the real code path. |
 | Date-based versioning (`vYYYY.1MMDD.1HHMM`) | Lexicographic sort = chronological. SemVer-parseable shape. Unambiguous mapping to release time. |
 | MIT license | Most permissive, matches upstream `sshtunnel`. |
 | No PyPI publish initially | Reduces maintenance overhead during pilot. `pipx run --spec git+` works fine for our consumer. |
-| stdin/stdout JSON, no temp files for secrets | No persistent on-disk artifacts containing SSH keys; daemon process holds them in memory only. |
+| stdin/stdout JSON, no temp files for secrets | No persistent on-disk artifacts containing SSH keys; daemon process parses inline PEM in memory and holds key objects only in memory. |
 | Status command minimal (PID liveness only) | Tunnel-internal health introspection from outside the daemon needs IPC. YAGNI for pilot; logs cover diagnostics. |
