@@ -1372,6 +1372,10 @@ def spawn_daemon(schema: InputSchema) -> dict[str, Any]:
         # replaces the process image entirely; the new envp contains the
         # runtime token, which is what makes /proc/<pid>/environ usable for
         # stop/status identity checks.
+        # Python sets O_CLOEXEC on pipe FDs by default (PEP 446); clear it
+        # so the freshly-exec'd worker inherits both pipe ends.
+        os.set_inheritable(ipc_write_fd, True)
+        os.set_inheritable(schema_read_fd, True)
         env = {**os.environ, TOKEN_ENV_VAR: runtime_token}
         os.execve(
             sys.executable,
@@ -1382,11 +1386,20 @@ def spawn_daemon(schema: InputSchema) -> dict[str, Any]:
             ],
             env,
         )
-    except OSError as exc:
-        # execve failure or earlier fork-side error. Best effort: report via
-        # IPC so the parent does not block on read forever.
+    except BaseException as exc:  # noqa: BLE001 - second-fork child must never return
+        # Any failure in the second-fork child (execve raise, MemoryError,
+        # KeyboardInterrupt, etc.) must terminate this process; otherwise the
+        # forked Python would unwind out of spawn_daemon back into whatever
+        # callsite it inherited from the parent. Best-effort: tell the parent
+        # via IPC so it does not block on a dead pipe forever.
         try:
-            err = DaemonError("failed to launch worker", {"errno": exc.errno})
+            if isinstance(exc, OSError):
+                err = DaemonError("failed to launch worker", {"errno": exc.errno})
+            else:
+                err = DaemonError(
+                    "worker pre-launch raised",
+                    {"type": type(exc).__name__},
+                )
             os.write(ipc_write_fd, json.dumps({
                 "kind": "daemon_error",
                 "payload": err.to_error_output(),
