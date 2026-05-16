@@ -26,7 +26,8 @@ Files this plan creates or modifies, with single-responsibility boundaries.
 - `garuda_tunnel/schemas.py` &mdash; pydantic models: `SSHOptions`, `DaemonOptions`, `NodeInput`, `InputSchema`, `ConnectionEntry`, `TunnelWarning`, `OutputSchema`, `ErrorOutput`, plus validators for `require` and per-node auth.
 - `garuda_tunnel/manager.py` &mdash; `TunnelManager` class: in-memory PEM parsing (`_load_pkey`), `start_all()` via `ThreadPoolExecutor` with verification, `stop_all()`, `start_all_and_build_output()` aggregator that returns either `OutputSchema` or `ErrorOutput`.
 - `garuda_tunnel/identity.py` &mdash; `verify_token(pid, token)` returning `IdentityCheckResult` (`match`, `mismatch`, `not_found`, `unavailable`). Linux: `/proc/<pid>/environ`. macOS: `ps -wwE -p <pid>`. Other: `unavailable`.
-- `garuda_tunnel/daemon.py` &mdash; `spawn_daemon(schema)`: IPC pipe + double fork; parent reads one JSON message and returns it. `_run_daemon_body()` for the final daemon (export env token, redirect FDs, start tunnels, write IPC, install signal handlers, `signal.pause()`).
+- `garuda_tunnel/daemon.py` &mdash; `spawn_daemon(schema)`: IPC pipe + schema pipe + double fork; the pre-daemon `execve`s itself into `python -m garuda_tunnel._worker` with the token in the fresh `envp`. Parent reads one JSON message from the IPC pipe and returns it.
+- `garuda_tunnel/_worker.py` &mdash; internal entry point invoked via `python -m garuda_tunnel._worker --ipc-fd <N> --schema-fd <M>`. Reads `InputSchema` JSON from the schema pipe, builds `TunnelManager`, writes startup result to the IPC pipe, installs signal handlers, blocks on `threading.Event().wait()`.
 - `garuda_tunnel/cli.py` &mdash; Click group `main` with subcommands `start`, `stop`, `status`. Custom `Group` class remaps `UsageError` to exit 64. All commands write JSON to stdout. `start` reads stdin JSON, validates, calls `spawn_daemon`, prints parent IPC result.
 
 ### Tests (`tests/`)
@@ -1196,86 +1197,55 @@ git commit -m "feat: TunnelManager with in-memory PEM loading and concurrent sta
 
 ---
 
-### Task 6: Daemon process with IPC handshake
+### Task 6: Daemon process with execve and IPC handshake
 
 **Files:**
 - Create: `garuda_tunnel/daemon.py`
+- Create: `garuda_tunnel/_worker.py`
 - Create: `tests/unit/test_daemon_ipc.py`
 
-This task wires the double-fork lifecycle. Real SSH tunnels are not started here; the test substitutes a fake startup callback to validate the IPC handshake and PID semantics. The full daemon with `TunnelManager` is exercised by Task 9 integration tests.
+> **Why execve, not just double-fork:** The runtime token must be visible
+> in `/proc/<pid>/environ` so `stop --pid --token` can verify identity.
+> Linux populates that snapshot at `execve(2)` only; `os.environ[...] = token`
+> after fork puts the variable in libc's heap, not in the kernel snapshot,
+> so it is invisible to `/proc/<pid>/environ`. After the second fork the
+> pre-daemon must re-exec itself, passing the token in the fresh `envp`.
+>
+> The schema is passed to the freshly-exec'd worker through a second
+> pipe (the worker reads JSON from that fd before doing anything else),
+> because in-memory Python objects do not survive `execve`.
 
-- [ ] **Step 1: Write failing IPC test using a fake startup callback**
+The daemon library exposes two real seams:
+
+- `spawn_daemon(schema)` — used by `cli start` (Task 7). Forks twice and
+  `execve`s the second-fork child into `python -m garuda_tunnel._worker`.
+- `_worker.main()` — the entry point that runs inside the freshly-exec'd
+  worker. Reads schema, builds `TunnelManager`, writes the IPC message,
+  blocks on signals.
+
+There is no in-process callback seam; the only way to exercise the daemon
+end-to-end is through `execve`, so the unit tests in this task drive
+`spawn_daemon` directly with a tiny `InputSchema` that has no nodes. The
+worker handles "zero nodes" as a degenerate success case (empty
+`connections`, no warnings, no tunnels started).
+
+- [ ] **Step 1: Write failing tests against spawn_daemon directly**
 
 `tests/unit/test_daemon_ipc.py`:
 
 ```python
 from __future__ import annotations
 
-import json
 import os
+import pathlib
 import signal
 import time
 
 import pytest
 
-from garuda_tunnel.daemon import spawn_daemon_with_callback
-
-
-def _fake_success_payload(token: str, pid: int) -> dict[str, object]:
-    return {
-        "kind": "success",
-        "payload": {
-            "connections": {},
-            "pid": pid,
-            "token": token,
-            "started_at": "2026-05-16T14:30:00Z",
-            "warnings": [],
-        },
-    }
-
-
-def test_spawn_daemon_returns_daemon_pid_via_ipc() -> None:
-    def startup(token: str) -> dict[str, object]:
-        return _fake_success_payload(token, os.getpid())
-
-    message = spawn_daemon_with_callback(startup_callback=startup, log_file=None)
-    payload = message["payload"]
-    pid = int(payload["pid"])
-    token = str(payload["token"])
-    try:
-        # Daemon must outlive the parent's IPC read.
-        for _ in range(20):
-            if _process_alive(pid):
-                break
-            time.sleep(0.05)
-        assert _process_alive(pid), "daemon process should be alive after IPC handshake"
-        assert pid != os.getpid()
-        assert token  # opaque non-empty token
-    finally:
-        if _process_alive(pid):
-            os.kill(pid, signal.SIGTERM)
-            for _ in range(40):
-                if not _process_alive(pid):
-                    break
-                time.sleep(0.05)
-
-
-def test_spawn_daemon_propagates_required_failure() -> None:
-    def startup(token: str) -> dict[str, object]:
-        return {
-            "kind": "required_failure",
-            "payload": {
-                "error": "RequiredTunnelFailure",
-                "message": "boom",
-                "details": {"failed": ["a"]},
-            },
-        }
-
-    with pytest.raises(SystemExit) as excinfo:
-        spawn_daemon_with_callback(startup_callback=startup, log_file=None)
-    # The CLI translates this into exit 2; spawn_daemon_with_callback uses the
-    # same SystemExit code so we can assert it directly.
-    assert excinfo.value.code == 2
+from garuda_tunnel.daemon import spawn_daemon
+from garuda_tunnel.identity import TOKEN_ENV_VAR
+from garuda_tunnel.schemas import InputSchema
 
 
 def _process_alive(pid: int) -> bool:
@@ -1284,134 +1254,146 @@ def _process_alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     return True
+
+
+def _wait_until_dead(pid: int, timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _process_alive(pid):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _make_empty_schema() -> InputSchema:
+    # A schema with zero nodes: the worker returns success with empty
+    # connections, which is exactly what the IPC handshake needs to test.
+    return InputSchema.model_validate({"nodes": {}})
+
+
+def test_spawn_daemon_returns_worker_pid_and_token_via_ipc() -> None:
+    schema = _make_empty_schema()
+    message = spawn_daemon(schema)
+    payload = message["payload"]
+    pid = int(payload["pid"])
+    token = str(payload["token"])
+    try:
+        assert _process_alive(pid), "worker process should be alive after IPC handshake"
+        assert pid != os.getpid()
+        assert token  # opaque non-empty token
+        # The worker process must carry the token in its /proc/<pid>/environ
+        # snapshot, populated by execve. This is the contract that makes
+        # `stop --pid --token` usable.
+        environ_blob = pathlib.Path(f"/proc/{pid}/environ").read_bytes()
+        assert f"{TOKEN_ENV_VAR}={token}".encode() in environ_blob
+    finally:
+        if _process_alive(pid):
+            os.kill(pid, signal.SIGTERM)
+            _wait_until_dead(pid)
+
+
+def test_spawn_daemon_propagates_required_failure() -> None:
+    # A required-failure path needs at least one node that will fail. We can
+    # request a node with a bogus host that the worker will attempt to
+    # connect to; SSHTunnelForwarder.start() will raise, and the worker
+    # reports required_failure → parent raises SystemExit(2).
+    schema = InputSchema.model_validate(
+        {
+            "nodes": {
+                "broken": {
+                    "host": "127.0.0.1",
+                    "port": 1,           # nothing listens here
+                    "user": "nobody",
+                    "ssh_password": "no",
+                    "remote_ports": [6443],
+                    "ssh_options": {"connect_timeout": 2},
+                }
+            }
+        }
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        spawn_daemon(schema)
+    assert excinfo.value.code == 2
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `pytest tests/unit/test_daemon_ipc.py -v`
-Expected: import error referencing missing `garuda_tunnel.daemon`.
+Expected: import error referencing missing `garuda_tunnel.daemon` (and `garuda_tunnel._worker`).
 
 - [ ] **Step 3: Implement `garuda_tunnel/daemon.py`**
 
 ```python
-"""POSIX double-fork daemonization with an IPC pipe used by the parent."""
+"""POSIX double-fork + execve daemon launcher with an IPC pipe."""
+
 from __future__ import annotations
 
 import json
 import os
 import secrets
-import signal
 import sys
-import threading
-from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from garuda_tunnel.exceptions import DaemonError
 from garuda_tunnel.identity import TOKEN_ENV_VAR
-from garuda_tunnel.manager import TunnelManager
-from garuda_tunnel.schemas import ErrorOutput, InputSchema, OutputSchema
-
-StartupCallback = Callable[[str], dict[str, Any]]
-"""Returns a dict ``{"kind": "success" | "required_failure", "payload": {...}}``.
-The ``payload`` is what the parent prints to stdout (after JSON-encoding)."""
+from garuda_tunnel.schemas import InputSchema
 
 
 def spawn_daemon(schema: InputSchema) -> dict[str, Any]:
-    """Production entry point. Builds a TunnelManager-backed startup callback."""
+    """Fork twice, execve into the worker, return the worker's IPC message.
 
-    def startup(token: str) -> dict[str, Any]:
-        manager = TunnelManager(schema)
-        result = manager.start_all_and_build_output(pid=os.getpid(), token=token)
-        if isinstance(result, OutputSchema):
-            return {"kind": "success", "payload": result.model_dump(mode="json")}
-        assert isinstance(result, ErrorOutput)
-        manager.stop_all()
-        return {"kind": "required_failure", "payload": result.model_dump(mode="json")}
-
-    return spawn_daemon_with_callback(
-        startup_callback=startup,
-        log_file=schema.daemon.log_file,
-    )
-
-
-def spawn_daemon_with_callback(
-    *,
-    startup_callback: StartupCallback,
-    log_file: str | None,
-) -> dict[str, Any]:
-    """Fork twice, run ``startup_callback`` in the final daemon, return IPC message.
-
-    Raises ``SystemExit(2)`` if the daemon reports a required tunnel failure.
-    Raises ``DaemonError`` (via ``SystemExit(4)``) if anything else fails to set
-    up the daemon process.
+    Raises ``SystemExit(2)`` if the worker reports required tunnel failure.
+    Raises ``SystemExit(4)`` if the worker reports a daemon error.
+    Raises ``DaemonError`` if the parent itself cannot complete the handshake.
     """
-    read_fd, write_fd = os.pipe()
+    ipc_read_fd, ipc_write_fd = os.pipe()
+    schema_read_fd, schema_write_fd = os.pipe()
     runtime_token = secrets.token_urlsafe(32)
 
     first_pid = os.fork()
     if first_pid > 0:
-        os.close(write_fd)
-        return _parent_wait(read_fd, child_pid=first_pid)
+        # Parent process.
+        os.close(ipc_write_fd)
+        os.close(schema_read_fd)
+        os.write(schema_write_fd, schema.model_dump_json().encode("utf-8"))
+        os.close(schema_write_fd)
+        return _parent_wait(ipc_read_fd, child_pid=first_pid)
 
     # First child.
-    os.close(read_fd)
+    os.close(ipc_read_fd)
+    os.close(schema_write_fd)
     try:
         os.setsid()
         os.umask(0)
         second_pid = os.fork()
         if second_pid > 0:
             os._exit(0)
-        _final_daemon_main(write_fd, runtime_token, log_file, startup_callback)
-    except DaemonError as exc:
-        _write_message(write_fd, {"kind": "daemon_error", "payload": exc.to_error_output()})
-        os._exit(4)
-    finally:
+        # Pre-daemon: execve into the worker. After this call the kernel
+        # replaces the process image entirely; the new envp contains the
+        # runtime token, which is what makes /proc/<pid>/environ usable for
+        # stop/status identity checks.
+        env = {**os.environ, TOKEN_ENV_VAR: runtime_token}
+        os.execve(
+            sys.executable,
+            [
+                sys.executable, "-m", "garuda_tunnel._worker",
+                "--ipc-fd", str(ipc_write_fd),
+                "--schema-fd", str(schema_read_fd),
+            ],
+            env,
+        )
+    except OSError as exc:
+        # execve failure or earlier fork-side error. Best effort: report via
+        # IPC so the parent does not block on read forever.
         try:
-            os.close(write_fd)
+            err = DaemonError("failed to launch worker", {"errno": exc.errno})
+            os.write(ipc_write_fd, json.dumps({
+                "kind": "daemon_error",
+                "payload": err.to_error_output(),
+            }).encode("utf-8"))
         except OSError:
             pass
-    os._exit(0)
-
-
-def _final_daemon_main(
-    write_fd: int,
-    token: str,
-    log_file: str | None,
-    startup_callback: StartupCallback,
-) -> None:
-    os.environ[TOKEN_ENV_VAR] = token
-    sys.stdout.flush()
-    sys.stderr.flush()
-
-    target_path = log_file if log_file is not None else os.devnull
-    try:
-        target = open(target_path, "ab", buffering=0)  # noqa: SIM115
-        devnull_in = open(os.devnull, "rb")  # noqa: SIM115
-    except OSError as exc:
-        raise DaemonError("failed to open daemon log target", {"errno": exc.errno}) from exc
-    os.dup2(devnull_in.fileno(), sys.stdin.fileno())
-    os.dup2(target.fileno(), sys.stdout.fileno())
-    os.dup2(target.fileno(), sys.stderr.fileno())
-
-    try:
-        message = startup_callback(token)
-    except Exception as exc:  # noqa: BLE001
-        _write_message(
-            write_fd,
-            {"kind": "daemon_error", "payload": {"error": type(exc).__name__,
-                                                  "message": str(exc),
-                                                  "details": {}}},
-        )
         os._exit(4)
-
-    _write_message(write_fd, message)
-    os.close(write_fd)
-
-    if message["kind"] == "required_failure":
-        os._exit(2)
-
-    _install_signal_handlers()
-    _wait_forever()
 
 
 def _parent_wait(read_fd: int, *, child_pid: int) -> dict[str, Any]:
@@ -1419,28 +1401,91 @@ def _parent_wait(read_fd: int, *, child_pid: int) -> dict[str, Any]:
         with os.fdopen(read_fd, "rb") as reader:
             raw = reader.read()
     except OSError as exc:
-        raise DaemonError("failed to read daemon IPC pipe", {"errno": exc.errno}) from exc
-    try:
-        message: dict[str, Any] = json.loads(raw.decode("utf-8"))
-    except json.JSONDecodeError as exc:
-        raise DaemonError("daemon IPC produced invalid JSON", {"position": exc.pos}) from exc
+        raise DaemonError("failed to read worker IPC pipe", {"errno": exc.errno}) from exc
 
-    # Reap the immediate child of the first fork; the final daemon is reparented to PID 1.
+    # Reap the first-fork child; the worker is reparented to PID 1.
     try:
         os.waitpid(child_pid, 0)
     except ChildProcessError:
         pass
 
+    if not raw:
+        raise DaemonError("worker IPC pipe closed without a message", {})
+
+    try:
+        message: dict[str, Any] = json.loads(raw.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise DaemonError("worker IPC produced invalid JSON", {"position": exc.pos}) from exc
+
     kind = message.get("kind")
     if kind == "success":
         return message
     if kind == "required_failure":
-        # Parent re-raises as SystemExit so the CLI can pick the exit code without
-        # interpreting payload structure.
         raise SystemExit(2)
     if kind == "daemon_error":
         raise SystemExit(4)
     raise DaemonError("unexpected IPC message kind", {"kind": str(kind)})
+```
+
+- [ ] **Step 4: Implement `garuda_tunnel/_worker.py`**
+
+```python
+"""Worker process entry point. Invoked via ``python -m garuda_tunnel._worker``.
+
+Reads ``InputSchema`` JSON from the file descriptor passed via ``--schema-fd``,
+runs ``TunnelManager.start_all_and_build_output``, writes the IPC message to
+``--ipc-fd``, then blocks on signals.
+
+This module is not part of the public CLI surface.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import signal
+import sys
+import threading
+from typing import Any
+
+from garuda_tunnel.exceptions import DaemonError
+from garuda_tunnel.identity import TOKEN_ENV_VAR
+from garuda_tunnel.manager import TunnelManager
+from garuda_tunnel.schemas import ErrorOutput, InputSchema, OutputSchema
+
+_SCHEMA_MAX_BYTES = 8 * 1024 * 1024  # 8 MiB is more than enough for any sane input
+
+
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="garuda_tunnel._worker", add_help=False)
+    parser.add_argument("--ipc-fd", type=int, required=True)
+    parser.add_argument("--schema-fd", type=int, required=True)
+    return parser.parse_args(argv)
+
+
+def _read_schema(schema_fd: int) -> InputSchema:
+    chunks: list[bytes] = []
+    while True:
+        chunk = os.read(schema_fd, 65536)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        if sum(map(len, chunks)) > _SCHEMA_MAX_BYTES:
+            raise DaemonError("schema pipe exceeded size limit", {"limit": _SCHEMA_MAX_BYTES})
+    os.close(schema_fd)
+    return InputSchema.model_validate_json(b"".join(chunks).decode("utf-8"))
+
+
+def _redirect_standard_fds(log_file: str | None) -> None:
+    # Redirect OS-level FDs 0/1/2 directly (the canonical daemonization idiom);
+    # works regardless of whether sys.std* has been wrapped by anything.
+    target_path = log_file if log_file is not None else os.devnull
+    target = open(target_path, "ab", buffering=0)  # noqa: SIM115
+    devnull_in = open(os.devnull, "rb")  # noqa: SIM115
+    os.dup2(devnull_in.fileno(), 0)
+    os.dup2(target.fileno(), 1)
+    os.dup2(target.fileno(), 2)
 
 
 def _write_message(fd: int, message: dict[str, Any]) -> None:
@@ -1448,12 +1493,12 @@ def _write_message(fd: int, message: dict[str, Any]) -> None:
     while payload:
         written = os.write(fd, payload)
         if written <= 0:
-            break
+            raise DaemonError("short write to IPC pipe", {"remaining": len(payload)})
         payload = payload[written:]
 
 
 def _install_signal_handlers() -> None:
-    def handler(signum: int, _frame: object) -> None:  # noqa: ARG001
+    def handler(_signum: int, _frame: object) -> None:
         os._exit(0)
 
     signal.signal(signal.SIGTERM, handler)
@@ -1463,14 +1508,58 @@ def _install_signal_handlers() -> None:
 def _wait_forever() -> None:
     event = threading.Event()
     event.wait()
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = _parse_args(argv)
+    token = os.environ.get(TOKEN_ENV_VAR, "")
+    manager = None
+    try:
+        schema = _read_schema(args.schema_fd)
+        _redirect_standard_fds(schema.daemon.log_file)
+        manager = TunnelManager(schema)
+        result = manager.start_all_and_build_output(pid=os.getpid(), token=token)
+        if isinstance(result, OutputSchema):
+            _write_message(args.ipc_fd, {"kind": "success", "payload": result.model_dump(mode="json")})
+            os.close(args.ipc_fd)
+        else:
+            assert isinstance(result, ErrorOutput)
+            manager.stop_all()
+            _write_message(
+                args.ipc_fd,
+                {"kind": "required_failure", "payload": result.model_dump(mode="json")},
+            )
+            os.close(args.ipc_fd)
+            os._exit(2)
+    except Exception as exc:  # noqa: BLE001 - convert any failure into IPC daemon_error
+        if manager is not None:
+            manager.stop_all()
+        err = exc if isinstance(exc, DaemonError) else DaemonError(
+            "worker failed before reporting", {"type": type(exc).__name__}
+        )
+        try:
+            _write_message(
+                args.ipc_fd,
+                {"kind": "daemon_error", "payload": err.to_error_output()},
+            )
+        except OSError:
+            pass
+        os._exit(4)
+
+    _install_signal_handlers()
+    _wait_forever()
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised by integration test
+    main()
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 5: Run tests to verify they pass**
 
 Run: `pytest tests/unit -v`
-Expected: prior tests still green plus 2 new IPC tests passing.
+Expected: prior tests still green plus 2 new daemon IPC tests passing.
 
-- [ ] **Step 5: Lint and type-check**
+- [ ] **Step 6: Lint and type-check**
 
 Run:
 
@@ -1480,13 +1569,13 @@ ruff check .
 mypy --strict garuda_tunnel
 ```
 
-Expected: green.
+Expected: green. The `# noqa: BLE001`, `# noqa: SIM115` comments are placed correctly; do not remove them.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add garuda_tunnel/daemon.py tests/unit/test_daemon_ipc.py
-git commit -m "feat: double-fork daemon with IPC handshake and signal-driven shutdown"
+git add garuda_tunnel/daemon.py garuda_tunnel/_worker.py tests/unit/test_daemon_ipc.py
+git commit -m "feat: double-fork+execve daemon with worker process and IPC handshake"
 ```
 
 ---

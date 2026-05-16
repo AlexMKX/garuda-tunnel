@@ -153,7 +153,8 @@ garuda-tunnel/                          (separate git repo)
 | `cli.py` | Click commands; read stdin / write stdout JSON; remap Click usage errors to exit 64; map domain exceptions to exit codes. |
 | `schemas.py` | Pydantic models: `NodeInput`, `SSHOptions`, `DaemonOptions`, `InputSchema`, `ConnectionEntry`, `TunnelWarning`, `OutputSchema`, `ErrorOutput`. |
 | `manager.py` | `TunnelManager`: holds list of `sshtunnel.SSHTunnelForwarder` instances; `start_all()` opens concurrently via `ThreadPoolExecutor`; aggregates per-node `StartResult`; `stop_all()` for cleanup; parses inline PEM keys in memory. |
-| `daemon.py` | `spawn_daemon(schema)`: POSIX double-fork with an IPC pipe; final daemon starts tunnels after fork, sends startup result and final PID to parent, redirects stdin/stdout/stderr, installs SIGTERM/SIGINT handlers, then blocks on `signal.pause()`. |
+| `daemon.py` | `spawn_daemon(schema)`: POSIX double-fork with an IPC pipe; after the second fork the pre-daemon `execve`s itself into `python -m garuda_tunnel._worker --ipc-fd <N>` with `GARUDA_TUNNEL_TOKEN=<token>` in the new envp so the kernel snapshots the token into `/proc/<pid>/environ`; the worker then starts tunnels, sends startup result and final PID to parent, redirects stdin/stdout/stderr, installs SIGTERM/SIGINT handlers, then blocks on `threading.Event().wait()`. |
+| `_worker.py` | Internal entry point invoked via `python -m garuda_tunnel._worker`. Reads `InputSchema` JSON from stdin, runs `TunnelManager.start_all_and_build_output`, writes the IPC message to the file descriptor passed via `--ipc-fd`, and blocks on signals. Not part of the public CLI. |
 | `exceptions.py` | Hierarchy: `GarudaTunnelError` → `SchemaValidationError`, `TunnelStartupError`, `RequiredTunnelFailure`, `DaemonError`. Each maps to a specific exit code. |
 | `__main__.py` | `python -m garuda_tunnel` → `cli.main()`. |
 | `__init__.py` | Exports `__version__` from `importlib.metadata`. No public Python API. |
@@ -169,17 +170,34 @@ caller                                      final daemon process
        schemas.InputSchema.model_validate
        (validation error → exit 1, JSON error to stdout)
 
-3.   create IPC pipe (read_fd, write_fd)
+3.   create IPC pipe (ipc_read_fd, ipc_write_fd)
+     create schema pipe (schema_read_fd, schema_write_fd)
+     generate runtime_token = secrets.token_urlsafe(32)
 4.   first fork:
-       parent keeps read_fd and waits for one JSON message
-       child continues
+       parent keeps ipc_read_fd, closes schema_read_fd,
+         writes InputSchema JSON to schema_write_fd, closes it,
+         waits for one IPC JSON message
+       child continues, closes ipc_read_fd and schema_write_fd
 5.   child: setsid(); second fork
        session leader exits 0
-       final daemon continues with write_fd
+       pre-daemon continues holding ipc_write_fd and schema_read_fd
+6.                                           pre-daemon execve's itself:
+                                               os.execve(
+                                                 sys.executable,
+                                                 [sys.executable, "-m",
+                                                  "garuda_tunnel._worker",
+                                                  "--ipc-fd", str(ipc_write_fd),
+                                                  "--schema-fd", str(schema_read_fd)],
+                                                 env={..., "GARUDA_TUNNEL_TOKEN": runtime_token},
+                                               )
+                                             (the new envp contains the token,
+                                              so /proc/<pid>/environ will show it)
                                               ↓
-6.                                           redirect stdin/stdout/stderr
-                                             (write_fd stays open)
-7.                                           manager = TunnelManager(schema)
+7.                                           worker process starts:
+                                               parse argv (--ipc-fd, --schema-fd)
+                                               redirect stdin/stdout/stderr to /dev/null or log file
+                                               read InputSchema JSON from schema_read_fd, close it
+                                               manager = TunnelManager(schema)
 8.                                           results = manager.start_all()
                                                # ThreadPoolExecutor, up to 10 workers
                                                for each node:
@@ -194,19 +212,19 @@ caller                                      final daemon process
                                                if n in required and failed]
                                              if required_failed:
                                                manager.stop_all()
-                                               write ErrorOutput to IPC
+                                               write ErrorOutput to ipc_write_fd
                                                exit 2
 
 10.                                          build OutputSchema:
                                                connections = successful results
                                                warnings = optional failures
                                                pid = os.getpid()  # final daemon PID
-                                               token = runtime_token
+                                               token = runtime_token (from environ)
                                                started_at = utcnow().isoformat() + "Z"
-                                             write OutputSchema to IPC
-                                             close write_fd
+                                             write OutputSchema to ipc_write_fd
+                                             close ipc_write_fd
 11.                                          install SIGTERM/SIGINT handlers
-                                             signal.pause()                    ←── waits forever
+                                             threading.Event().wait()          ←── waits forever
 
 12.  parent reads IPC JSON:
        if success:
@@ -234,14 +252,22 @@ N. garuda-tunnel stop --pid PID --token TOKEN ─────→ SIGTERM receive
    {stopped: true}
 ```
 
-**Critical**: the daemon forks before any `SSHTunnelForwarder.start()` call.
-`SSHTunnelForwarder` starts Paramiko and socketserver threads; forking after
-those threads exist is unsafe because only the calling thread survives in the
-child. The final daemon process must create and own all tunnel threads.
+**Critical**: the daemon forks AND re-execs before any `SSHTunnelForwarder.start()`
+call. `SSHTunnelForwarder` starts Paramiko and socketserver threads; forking
+after those threads exist is unsafe because only the calling thread survives
+in the child. The final worker process must create and own all tunnel threads.
 
-**Critical**: the parent process writes stdout only after the final daemon has
+**Critical**: the parent process writes stdout only after the worker has
 reported its final PID and startup result through the IPC pipe. The PID in
 `OutputSchema` is therefore the PID that `stop` and `status` should target.
+
+**Critical**: the runtime token is placed in the worker's environment via
+`os.execve(..., env={..., GARUDA_TUNNEL_TOKEN: token})`, not via
+`os.environ[...]=token` after fork. On Linux the kernel snapshots `envp` at
+`execve(2)` and exposes it via `/proc/<pid>/environ`; variables added via
+`setenv(3)` (which Python's `os.environ` uses) after exec live in libc's heap
+and are not visible to `/proc/<pid>/environ`. The execve step is what makes
+the identity check usable.
 
 ### Concurrency model
 
@@ -257,9 +283,10 @@ reported its final PID and startup result through the IPC pipe. The PID in
 
 **Daemon runtime:**
 
-- Single Python process, blocked on `signal.pause()` in the main thread.
+- Single Python worker process, blocked on `threading.Event().wait()` in the main
+  thread.
 - Each `SSHTunnelForwarder` runs its own paramiko transport + socketserver
-  threads. The daemon process is essentially a thread supervisor.
+  threads. The worker process is essentially a thread supervisor.
 
 **Across `start` invocations:**
 
@@ -288,54 +315,81 @@ All errors also write structured JSON to stdout:
 }
 ```
 
-### Daemonization (POSIX double-fork)
+### Daemonization (POSIX double-fork plus execve)
 
 ```python
 def spawn_daemon(schema: InputSchema) -> dict:
-    read_fd, write_fd = os.pipe()
+    ipc_read_fd, ipc_write_fd = os.pipe()
+    schema_read_fd, schema_write_fd = os.pipe()
     runtime_token = secrets.token_urlsafe(32)
 
     first_pid = os.fork()
     if first_pid > 0:
-        os.close(write_fd)
-        return read_one_json_message(read_fd)  # final daemon PID + startup result
+        # Parent: send schema down to the worker via the schema pipe, then
+        # wait for the worker to report startup result via the ipc pipe.
+        os.close(ipc_write_fd)
+        os.close(schema_read_fd)
+        os.write(schema_write_fd, schema.model_dump_json().encode("utf-8"))
+        os.close(schema_write_fd)
+        return read_one_json_message(ipc_read_fd)  # worker PID + startup result
 
+    # First child.
+    os.close(ipc_read_fd)
+    os.close(schema_write_fd)
     os.setsid()
     os.umask(0)
     if os.fork() > 0:
         os._exit(0)              # session leader
 
-    os.environ["GARUDA_TUNNEL_TOKEN"] = runtime_token
+    # Pre-daemon: replace process image with the worker, putting the token in
+    # the new envp so /proc/<pid>/environ can see it after exec.
+    env = {**os.environ, GARUDA_TUNNEL_TOKEN_ENV: runtime_token}
+    os.execve(
+        sys.executable,
+        [
+            sys.executable, "-m", "garuda_tunnel._worker",
+            "--ipc-fd", str(ipc_write_fd),
+            "--schema-fd", str(schema_read_fd),
+        ],
+        env,
+    )
+```
 
-    sys.stdout.flush()
-    sys.stderr.flush()
+```python
+# garuda_tunnel/_worker.py
+def main() -> None:
+    args = parse_args()                                 # --ipc-fd, --schema-fd
+    token = os.environ[GARUDA_TUNNEL_TOKEN_ENV]         # set by parent's execve
+    schema_json = os.read(args.schema_fd, MAX_SCHEMA_BYTES).decode("utf-8")
+    os.close(args.schema_fd)
+    schema = InputSchema.model_validate_json(schema_json)
 
-    log_file = schema.daemon.log_file
-    target = open(log_file, "ab", buffering=0) if log_file else open(os.devnull, "ab")
-    os.dup2(open(os.devnull, "rb").fileno(), sys.stdin.fileno())
-    os.dup2(target.fileno(), sys.stdout.fileno())
-    os.dup2(target.fileno(), sys.stderr.fileno())
+    redirect_standard_fds_to_log_or_devnull(schema.daemon.log_file)
 
-    # Final daemon process. Start tunnels only after all forks are complete.
     manager = None
     try:
         manager = TunnelManager(schema)
         startup_result = manager.start_all_and_build_output(
             pid=os.getpid(),
-            token=runtime_token,
+            token=token,
         )
-        write_json_message(write_fd, startup_result)
-    except RequiredTunnelFailure as exc:
-        if manager is not None:
-            manager.stop_all()
-        write_json_message(write_fd, exc.to_error_output())
-        os._exit(2)
+        write_json_message(args.ipc_fd, startup_result)
+        if startup_result.get("error"):                  # ErrorOutput payload
+            if manager is not None:
+                manager.stop_all()
+            os._exit(2)
     finally:
-        os.close(write_fd)
+        os.close(args.ipc_fd)
 
     install_signal_handlers(manager)
     wait_for_signal()
 ```
+
+The pre-daemon never returns from `os.execve`; the kernel replaces the process
+image with the freshly-loaded Python interpreter, which runs `_worker.main()`
+in the same process ID as the second-fork child. `/proc/<pid>/environ` now
+contains the snapshot of `env` passed to `execve`, including
+`GARUDA_TUNNEL_TOKEN=<token>`.
 
 ---
 
@@ -796,8 +850,10 @@ plugin's quirks (port binding races, fixture scoping).
 | POSIX double-fork daemonization | Standard pattern. systemd-notify and similar are overkill for our DE use case. |
 | Required-vs-optional via `require: "*" \| list` | Lets caller distinguish critical tunnels (must succeed or abort) from best-effort ones (failure → warning). Default `"*"` is the conservative behavior. |
 | Cleanup all-or-nothing on required failure | Avoids leaking orphan tunnels when the operation as a whole failed. Caller can retry cleanly. |
-| Fork before starting tunnels | `SSHTunnelForwarder.start()` creates Paramiko/socketserver threads. Forking after thread creation is unsafe, so the final daemon must own startup. |
-| Parent/daemon IPC pipe | Lets `start` return the final daemon PID and startup result while keeping stdout clean and machine-readable. |
+| Fork before starting tunnels | `SSHTunnelForwarder.start()` creates Paramiko/socketserver threads. Forking after thread creation is unsafe, so the final worker must own startup. |
+| `execve` after double-fork instead of `os.environ[...] = token` | Linux `/proc/<pid>/environ` is the kernel's snapshot of `envp` taken at `execve(2)`; `setenv(3)` (and Python's `os.environ`) updates only libc's copy after that snapshot is taken. To make the runtime token visible to `stop --pid --token` via `/proc/<pid>/environ`, the daemon re-execs itself with the token in the fresh `envp`. |
+| Parent/worker IPC pipe | Lets `start` return the final worker PID and startup result while keeping stdout clean and machine-readable. |
+| Separate schema pipe parent → worker | The worker is a freshly execve'd process and cannot inherit the in-memory `InputSchema` from the parent. The parent serializes the schema to JSON on a second pipe; the worker reads it on stdin-side, validates, and runs. |
 | PID plus token for stop/status | PID alone can target an unrelated reused process. A runtime token in the daemon environment gives callers a stateless identity check. |
 | Real Docker-based integration tests over mocks | Mocks of `sshtunnel`/`paramiko` give false confidence. Containerized `openssh-server + iperf3` exercises the real code path. |
 | Date-based versioning (`vYYYY.1MMDD.1HHMM`) | Lexicographic sort = chronological. SemVer-parseable shape. Unambiguous mapping to release time. |
