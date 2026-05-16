@@ -962,7 +962,17 @@ from io import StringIO
 from typing import Iterable
 
 import paramiko
-import sshtunnel
+
+# sshtunnel 0.4.0 references ``paramiko.DSSKey`` at module-load time inside
+# ``SSHTunnelForwarder.get_keys`` via a dict literal. paramiko 4.x removed DSS
+# support entirely (RFC 8332), so the attribute lookup raises AttributeError
+# before any tunnel can be opened. Alias DSSKey to RSAKey (it is only used as
+# a dict value during key-type iteration) so import-time evaluation succeeds.
+# DSS keys themselves remain unsupported.
+if not hasattr(paramiko, "DSSKey"):
+    paramiko.DSSKey = paramiko.RSAKey
+
+import sshtunnel  # noqa: E402  # must import after the DSSKey shim above
 
 from garuda_tunnel.exceptions import (
     RequiredTunnelFailure,
@@ -984,10 +994,12 @@ _PARAMIKO_KEY_CLASSES: list[type[paramiko.PKey]] = [
     paramiko.RSAKey,
 ]
 
-# DSSKey is still exposed on paramiko 4.x; include it last to keep behavior
-# stable while the sshtunnel/paramiko 5.0 incompatibility is unresolved.
+# DSSKey was removed in paramiko 4.x. If our compatibility shim aliased it
+# to RSAKey, do not re-append (it would duplicate RSAKey in the loader's
+# try-list). On older paramiko where DSSKey is a real distinct class,
+# include it last so DSS keys remain loadable.
 _dss_cls = getattr(paramiko, "DSSKey", None)
-if _dss_cls is not None:
+if _dss_cls is not None and _dss_cls is not paramiko.RSAKey:
     _PARAMIKO_KEY_CLASSES.append(_dss_cls)
 
 
@@ -1125,6 +1137,12 @@ class TunnelManager:
             "local_bind_addresses": local_binds,
             "compression": node.ssh_options.compression,
             "set_keepalive": 30.0,
+            # Caller provides credentials explicitly; do not scan ~/.ssh or
+            # consult ssh-agent. Required to avoid sshtunnel triggering
+            # paramiko.DSSKey lookups on paramiko 4.x where the attribute was
+            # removed.
+            "allow_agent": False,
+            "host_pkey_directories": [],
         }
         if node.ssh_pkey:
             kwargs["ssh_pkey"] = load_inline_pkey(node.ssh_pkey, node.ssh_pkey_passphrase)
@@ -1915,6 +1933,13 @@ This task requires Docker available on the host. CI runs only on `ubuntu-latest`
 
 - [ ] **Step 1: Write `tests/integration/docker-compose.yml`**
 
+> **Why no `command:` override:** linuxserver/openssh-server uses s6-overlay
+> as PID 1. Wrapping `/init` in `sh -c "... && /init"` (as an earlier draft
+> tried) makes s6 refuse to start (`s6-overlay-suexec: fatal: can only run
+> as pid 1`). The tests do not need an `iperf3` listener inside the
+> container because `_verify_and_collect` probes only the local-bind socket
+> via `socket.connect_ex`; the remote-side TCP target is never touched.
+
 ```yaml
 services:
   sshd-a:
@@ -1930,10 +1955,6 @@ services:
       - ./_keys:/keys:ro
     ports:
       - "127.0.0.1::2222"
-    command: >-
-      sh -c "apk add --no-cache iperf3 &&
-             iperf3 -s -B 127.0.0.1 -p 6443 -D &&
-             /init"
 
   sshd-b:
     image: lscr.io/linuxserver/openssh-server:latest
@@ -1948,10 +1969,6 @@ services:
       - ./_keys:/keys:ro
     ports:
       - "127.0.0.1::2222"
-    command: >-
-      sh -c "apk add --no-cache iperf3 &&
-             iperf3 -s -B 127.0.0.1 -p 6443 -D &&
-             /init"
 
   sshd-c:
     image: lscr.io/linuxserver/openssh-server:latest
@@ -1966,10 +1983,6 @@ services:
       - ./_keys:/keys:ro
     ports:
       - "127.0.0.1::2222"
-    command: >-
-      sh -c "apk add --no-cache iperf3 &&
-             iperf3 -s -B 127.0.0.1 -p 6443 -D &&
-             /init"
 ```
 
 - [ ] **Step 2: Write `tests/integration/conftest.py` with session fixtures**
