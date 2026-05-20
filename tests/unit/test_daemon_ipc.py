@@ -1,3 +1,11 @@
+"""Daemon spawn IPC handshake.
+
+Validates: spawn_daemon returns worker pid/token via IPC and surfaces
+RequiredTunnelFailure when the worker reports unrecoverable startup
+errors.
+Code: garuda_tunnel/daemon.py
+"""
+
 from __future__ import annotations
 
 import os
@@ -10,6 +18,8 @@ import pytest
 from garuda_tunnel.daemon import spawn_daemon
 from garuda_tunnel.identity import IdentityCheckResult, verify_token
 from garuda_tunnel.schemas import InputSchema
+
+pytestmark = pytest.mark.unit
 
 
 def _process_alive(pid: int) -> bool:
@@ -36,6 +46,7 @@ def _make_empty_schema() -> InputSchema:
 
 
 def test_spawn_daemon_returns_worker_pid_and_token_via_ipc() -> None:
+    """Worker pid and token are delivered over the IPC pipe and process is alive."""
     schema = _make_empty_schema()
     message = spawn_daemon(schema)
     payload = message["payload"]
@@ -45,10 +56,10 @@ def test_spawn_daemon_returns_worker_pid_and_token_via_ipc() -> None:
         assert _process_alive(pid), "worker process should be alive after IPC handshake"
         assert pid != os.getpid()
         assert token  # opaque non-empty token
-        # The worker process must carry the token in its process environment so
-        # that `stop --pid --token` can verify identity. Exercise this via the
-        # public identity API, which probes /proc on Linux and `ps -wwE` on
-        # macOS (the only two platforms the project supports).
+        # The worker process must hold the identity lockfile so that
+        # `stop --pid --token` can verify identity. Exercise this via the
+        # public identity API, which checks for an exclusive flock on
+        # ~/.local/state/garuda-tunnel/<token>.lock.
         if sys.platform not in {"linux", "darwin"}:
             pytest.skip("token identity check only validated on Linux and macOS")
         assert verify_token(pid, token) == IdentityCheckResult.match
@@ -59,6 +70,7 @@ def test_spawn_daemon_returns_worker_pid_and_token_via_ipc() -> None:
 
 
 def test_spawn_daemon_propagates_required_failure() -> None:
+    """A required node that cannot start surfaces as IPC required_failure."""
     schema = InputSchema.model_validate(
         {
             "nodes": {
@@ -67,7 +79,7 @@ def test_spawn_daemon_propagates_required_failure() -> None:
                     "port": 1,  # nothing listens here
                     "user": "nobody",
                     "ssh_password": "no",
-                    "remote_ports": [6443],
+                    "remote_targets": {"p": "127.0.0.1:6443"},
                     "ssh_options": {"connect_timeout": 2},
                 }
             }
@@ -77,3 +89,29 @@ def test_spawn_daemon_propagates_required_failure() -> None:
     assert message["kind"] == "required_failure"
     payload = message["payload"]
     assert payload["error"] == "RequiredTunnelFailure"
+
+
+def test_spawn_daemon_with_leading_dash_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: `secrets.token_urlsafe` may return a leading-'-' string.
+
+    A bare ``--token <value>`` argv with ``value`` starting with ``-`` would
+    make argparse treat it as a separate flag (e.g. ``-AbC...``) and reject
+    the parse. The fix is to use ``--token=<value>`` form in argv, which
+    argparse never splits.
+    """
+    monkeypatch.setattr(
+        "garuda_tunnel.daemon.secrets.token_urlsafe",
+        lambda _nbytes: "-leading-dash-token-AbCdEf",
+    )
+    schema = _make_empty_schema()
+    message = spawn_daemon(schema)
+    assert message["kind"] == "success"
+    payload = message["payload"]
+    pid = int(payload["pid"])
+    try:
+        assert _process_alive(pid)
+        assert payload["token"] == "-leading-dash-token-AbCdEf"
+    finally:
+        if _process_alive(pid):
+            os.kill(pid, signal.SIGTERM)
+            _wait_until_dead(pid)

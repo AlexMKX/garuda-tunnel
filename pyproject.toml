@@ -7,8 +7,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dynamic = ["version"]
 dependencies = [
-    "sshtunnel>=0.4.0,<0.5",
-    "paramiko>=4.0,<5",
+    "asyncssh>=2.23,<3",
     "pydantic>=2.13,<3",
     "click>=8.3,<9",
 ]
@@ -16,9 +15,13 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=9.0,<10",
+    "pytest-asyncio>=1.3,<2",
     "pytest-cov>=5.0",
     "mypy>=1.13",
     "ruff>=0.8",
+    "black>=24.10,<26",
+    "pylint>=3.3,<4",
+    "vulture>=2.13,<3",
 ]
 
 [project.scripts]
@@ -47,9 +50,88 @@ strict         = true
 python_version = "3.10"
 
 [[tool.mypy.overrides]]
-module = ["paramiko", "paramiko.*", "sshtunnel", "sshtunnel.*"]
+module = ["asyncssh", "asyncssh.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-markers = ["integration: requires docker (sshd containers)"]
-addopts = "-m 'not integration' --cov=garuda_tunnel --cov-report=term-missing"
+markers = [
+    "integration: requires docker (sshd containers)",
+    "unit: pure-Python unit tests",
+]
+# Coverage is collected explicitly per job: unit job uses `pytest --cov`,
+# integration job uses `coverage run -m pytest`. The combine + gate step
+# enforces --fail-under=80 on the merged data. `addopts` therefore only
+# controls test selection and asyncio mode.
+addopts = "-m 'not integration'"
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+# parallel = true so that subprocess-coverage produced via sitecustomize.py
+# writes its own .coverage.<pid>.<rand> file; `coverage combine` then
+# merges unit + integration measurements before the gate is evaluated.
+parallel = true
+source = ["garuda_tunnel"]
+# _worker.py is omitted because `daemon.py::spawn_daemon` re-execs the
+# Python interpreter via os.execve before the worker module runs, which
+# bypasses the coverage atexit hook. The worker is functionally covered
+# by the integration suite (the daemon would not start otherwise), but
+# the measurement cannot be attributed.
+omit = [
+    "*/garuda_tunnel/__main__.py",
+    "*/garuda_tunnel/_version.py",
+    "*/garuda_tunnel/_worker.py",
+    "garuda_tunnel/__main__.py",
+    "garuda_tunnel/_version.py",
+    "garuda_tunnel/_worker.py",
+]
+
+[tool.coverage.paths]
+# Map editable-install and CI checkout paths to the same logical source so
+# `coverage combine` sees a single set of files.
+source = [
+    "garuda_tunnel",
+    "*/garuda_tunnel",
+    "*/site-packages/garuda_tunnel",
+]
+
+[tool.coverage.report]
+# Mirror [tool.coverage.run].omit so the report excludes the same set of
+# files regardless of which step produces the data.
+omit = [
+    "*/garuda_tunnel/__main__.py",
+    "*/garuda_tunnel/_version.py",
+    "*/garuda_tunnel/_worker.py",
+    "garuda_tunnel/__main__.py",
+    "garuda_tunnel/_version.py",
+    "garuda_tunnel/_worker.py",
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.pylint.main]
+fail-under = 9.0
+py-version = "3.10"
+ignore = ["_version.py"]
+
+[tool.pylint."messages control"]
+# Global disables: explicitly kept noise reducers for small-package codebase.
+# - too-few-public-methods / too-many-* : pydantic models + asyncssh wrappers.
+# - duplicate-code : noisy across small test files (re-checked manually).
+# broad-exception-caught is NOT disabled globally; cases are annotated inline.
+disable = [
+    "too-few-public-methods",
+    "too-many-arguments",
+    "too-many-positional-arguments",
+    "duplicate-code",
+]
+
+[tool.pylint.format]
+max-line-length = 100
+
+[tool.vulture]
+paths = ["garuda_tunnel", "vulture_whitelist.py"]
+min_confidence = 80
+ignore_decorators = ["@pytest.fixture", "@field_validator*", "@model_validator*", "@classmethod"]
+ignore_names = ["cls"]

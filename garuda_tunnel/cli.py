@@ -82,7 +82,9 @@ def start_command() -> None:
         sys.stdout.write("\n")
         sys.stdout.flush()
         sys.exit(exit_code_for(exc))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001  # pylint: disable=broad-exception-caught
+        # Top-level guard: surface any unexpected failure as DaemonError JSON and
+        # exit 4 instead of dumping a Python traceback to a caller.
         sys.stdout.write(
             json.dumps(
                 DaemonError(
@@ -131,7 +133,9 @@ def _is_alive(pid: int, token: str | None) -> bool:
     return verify_token(pid, token) == IdentityCheckResult.match
 
 
-def _kill_with_identity(pid: int, token: str, grace_seconds: int, *, force: bool) -> bool:
+def _kill_with_identity(  # pylint: disable=too-many-return-statements  # reason: each identity-check outcome maps to a distinct early return
+    pid: int, token: str, grace_seconds: int, *, force: bool
+) -> bool:
     check = verify_token(pid, token)
     if check == IdentityCheckResult.not_found:
         sys.stdout.write(json.dumps({"stopped": False, "reason": "not found"}))

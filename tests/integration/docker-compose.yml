@@ -10,6 +10,7 @@ services:
       - PASSWORD_ACCESS=false
     volumes:
       - ./_keys:/keys:ro
+      - /tmp/garuda-tunnel-it:/srv/files:ro
     ports:
       - "127.0.0.1::2222"
 
@@ -24,6 +25,7 @@ services:
       - PASSWORD_ACCESS=false
     volumes:
       - ./_keys:/keys:ro
+      - /tmp/garuda-tunnel-it:/srv/files:ro
     ports:
       - "127.0.0.1::2222"
 
@@ -38,5 +40,77 @@ services:
       - PASSWORD_ACCESS=false
     volumes:
       - ./_keys:/keys:ro
+      - /tmp/garuda-tunnel-it:/srv/files:ro
     ports:
       - "127.0.0.1::2222"
+
+  sshd-bastion:
+    image: lscr.io/linuxserver/openssh-server:latest
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - PUBLIC_KEY_FILE=/keys/id_test.pub
+      - USER_NAME=tester
+      - SUDO_ACCESS=false
+      - PASSWORD_ACCESS=false
+    volumes:
+      - ./_keys:/keys:ro
+      - ./_bastion_sshd_config:/config/sshd/sshd_config.d:ro
+    ports:
+      - "127.0.0.1::2222"
+    networks:
+      - internal
+
+  http-target-1:
+    image: python:3.12-alpine
+    environment:
+      - IDENTITY=target-1
+    command:
+      - python
+      - -c
+      - |
+        import os
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        identity = os.environ["IDENTITY"].encode()
+        class H(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(identity)))
+                self.end_headers()
+                self.wfile.write(identity)
+            def log_message(self, *args): pass
+        ThreadingHTTPServer(("0.0.0.0", 80), H).serve_forever()
+    networks:
+      internal:
+        aliases:
+          - target-1
+
+  http-target-2:
+    image: python:3.12-alpine
+    environment:
+      - IDENTITY=target-2
+    command:
+      - python
+      - -c
+      - |
+        import os
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        identity = os.environ["IDENTITY"].encode()
+        class H(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(identity)))
+                self.end_headers()
+                self.wfile.write(identity)
+            def log_message(self, *args): pass
+        ThreadingHTTPServer(("0.0.0.0", 80), H).serve_forever()
+    networks:
+      internal:
+        aliases:
+          - target-2
+
+networks:
+  internal:
+    driver: bridge

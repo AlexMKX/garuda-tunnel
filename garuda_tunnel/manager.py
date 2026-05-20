@@ -1,112 +1,78 @@
-"""Tunnel orchestration: parallel SSHTunnelForwarder startup and teardown."""
+"""Tunnel orchestration on asyncssh: per-node connection + forwards + SFTP."""
 
 from __future__ import annotations
 
-import socket
-import threading
-from concurrent.futures import ThreadPoolExecutor
+import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from io import StringIO
-from typing import Iterable
 
-import paramiko
+import asyncssh
 
-# sshtunnel 0.4.0 references ``paramiko.DSSKey`` at module-load time inside
-# ``SSHTunnelForwarder.get_keys`` via a dict literal. paramiko 4.x removed DSS
-# support entirely (RFC 8332), so the attribute lookup raises AttributeError
-# before any tunnel can be opened. Alias DSSKey to RSAKey (it is only used as
-# a dict value during key-type iteration) so import-time evaluation succeeds.
-# DSS keys themselves remain unsupported; that is fine because no caller can
-# realistically present one in 2026.
-if not hasattr(paramiko, "DSSKey"):
-    paramiko.DSSKey = paramiko.RSAKey
-
-import sshtunnel  # noqa: E402  # must import after the DSSKey shim above
-
-from garuda_tunnel.exceptions import (
-    RequiredTunnelFailure,
-    SchemaValidationError,
-    TunnelStartupError,
-)
+from garuda_tunnel.exceptions import RequiredTunnelFailure, TunnelStartupError
+from garuda_tunnel.fetcher import fetch_files
 from garuda_tunnel.schemas import (
-    ConnectionEntry,
     ErrorOutput,
+    FetchedFile,
     InputSchema,
-    NodeInput,
+    NodeOutput,
     OutputSchema,
     TunnelWarning,
 )
+from garuda_tunnel.ssh import close_transport, open_connection, open_local_forwards
 
-_PARAMIKO_KEY_CLASSES: list[type[paramiko.PKey]] = [
-    paramiko.Ed25519Key,
-    paramiko.ECDSAKey,
-    paramiko.RSAKey,
-]
-
-# DSSKey was removed in paramiko 4.x. If our compatibility shim above
-# aliased it to RSAKey, do not re-append (it would duplicate RSAKey in
-# the loader's try-list). On older paramiko where DSSKey is a real class,
-# include it last so DSS keys remain loadable.
-_dss_cls = getattr(paramiko, "DSSKey", None)
-if _dss_cls is not None and _dss_cls is not paramiko.RSAKey:
-    _PARAMIKO_KEY_CLASSES.append(_dss_cls)
-
-
-def load_inline_pkey(pem: str, passphrase: str | None) -> paramiko.PKey:
-    """Parse a PEM string into a Paramiko key. Never writes the key to disk."""
-    last_error: Exception | None = None
-    for cls in _PARAMIKO_KEY_CLASSES:
-        try:
-            return cls.from_private_key(StringIO(pem), password=passphrase)
-        except paramiko.SSHException as exc:
-            last_error = exc
-            continue
-        except ValueError as exc:
-            last_error = exc
-            continue
-    raise SchemaValidationError(
-        "ssh_pkey could not be parsed by any supported Paramiko key class",
-        {"last_error": str(last_error) if last_error else ""},
-    )
+# Errors we expect from a remote SSH peer, local sshd handshake, or
+# from loading inline client material. Anything outside this tuple is a
+# program bug and must propagate, not be flattened into a node failure.
+_NODE_STARTUP_ERRORS: tuple[type[BaseException], ...] = (
+    asyncssh.Error,
+    asyncssh.KeyImportError,
+    OSError,
+    asyncio.TimeoutError,
+    TunnelStartupError,
+)
 
 
 @dataclass
-class _StartResult:
+class _NodeRuntime:
+    """Per-node bookkeeping shared between start_all and stop_all."""
+
     name: str
     success: bool
-    connections: list[ConnectionEntry] = field(default_factory=list)
-    forwarder: sshtunnel.SSHTunnelForwarder | None = None
+    ports: dict[str, int] = field(default_factory=dict)
+    fetched_files: dict[str, FetchedFile] = field(default_factory=dict)
+    conn: asyncssh.SSHClientConnection | None = None
+    listeners: list[asyncssh.SSHListener] = field(default_factory=list)
     error: str | None = None
 
 
 class TunnelManager:
+    """Orchestrate asyncssh transports + fetch_files for an InputSchema."""
+
     def __init__(self, schema: InputSchema) -> None:
+        """Store the parsed input schema; do not open any transport yet."""
         self._schema = schema
-        self._forwarders: list[sshtunnel.SSHTunnelForwarder] = []
-        self._lock = threading.Lock()
+        self._runtimes: list[_NodeRuntime] = []
 
-    def stop_all(self) -> None:
-        with self._lock:
-            forwarders = list(self._forwarders)
-            self._forwarders.clear()
-        for fwd in forwarders:
-            try:
-                fwd.stop(force=True)
-            except Exception:  # noqa: BLE001 - we want best-effort cleanup
-                continue
+    async def stop_all(self) -> None:
+        """Close every active listener and connection, best-effort."""
+        runtimes = list(self._runtimes)
+        self._runtimes.clear()
+        for runtime in runtimes:
+            await close_transport(runtime.conn, runtime.listeners)
 
-    def start_all_and_build_output(
+    async def start_all_and_build_output(
         self,
         *,
         pid: int,
         token: str,
     ) -> OutputSchema | ErrorOutput:
-        results = self._start_all()
-        required = self._required_set(results)
-        failed_required = [r for r in results if not r.success and r.name in required]
+        """Open every node concurrently; build OutputSchema or ErrorOutput."""
+        results = await self._start_all()
+        failed_required = [
+            r for r in results if not r.success and self._schema.nodes[r.name].required
+        ]
         if failed_required:
-            self.stop_all()
+            await self.stop_all()
             exc = RequiredTunnelFailure(
                 "required tunnel(s) failed to start",
                 {
@@ -120,13 +86,19 @@ class TunnelManager:
                 message=exc.message,
                 details=exc.details,
             )
-        connections: dict[str, list[ConnectionEntry]] = {
-            r.name: r.connections for r in results if r.success
+
+        connections: dict[str, NodeOutput] = {
+            r.name: NodeOutput(
+                ports=r.ports,
+                fetch_files=r.fetched_files,
+            )
+            for r in results
+            if r.success
         }
         warnings = [
             TunnelWarning(node=r.name, error=r.error or "unknown error")
             for r in results
-            if not r.success
+            if not r.success and not self._schema.nodes[r.name].required
         ]
         return OutputSchema(
             connections=connections,
@@ -136,95 +108,49 @@ class TunnelManager:
             warnings=warnings,
         )
 
-    def _required_set(self, results: Iterable[_StartResult]) -> set[str]:
-        if self._schema.require == "*":
-            return {r.name for r in results}
-        assert isinstance(self._schema.require, list)
-        return set(self._schema.require)
-
-    def _start_all(self) -> list[_StartResult]:
+    async def _start_all(self) -> list[_NodeRuntime]:
+        """Start every node in the schema concurrently and return their runtimes."""
         names = list(self._schema.nodes.keys())
-        max_workers = max(1, min(len(names), 10))
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            return list(pool.map(self._start_one, names))
+        coros = [self._start_one(name) for name in names]
+        return await asyncio.gather(*coros)
 
-    def _start_one(self, name: str) -> _StartResult:
+    async def _start_one(self, name: str) -> _NodeRuntime:
+        """Open one node end-to-end: connection, local forwards, optional fetch."""
         node = self._schema.nodes[name]
+        runtime = _NodeRuntime(name=name, success=False)
         try:
-            forwarder = self._build_forwarder(node)
-            forwarder.start()
-        except Exception as exc:  # noqa: BLE001 - aggregate per-node failure
-            return _StartResult(name=name, success=False, error=str(exc))
+            runtime.conn = await open_connection(node)
+        except _NODE_STARTUP_ERRORS as exc:
+            runtime.error = str(exc)
+            return runtime
+
         try:
-            entries = self._verify_and_collect(node, forwarder)
-        except Exception as exc:  # noqa: BLE001 - aggregate per-node failure
+            entries, listeners = await open_local_forwards(runtime.conn, node)
+        except _NODE_STARTUP_ERRORS as exc:
+            runtime.error = str(exc)
+            await close_transport(runtime.conn, [])
+            runtime.conn = None
+            return runtime
+        runtime.ports = entries
+        runtime.listeners = listeners
+
+        if node.fetch_files:
             try:
-                forwarder.stop(force=True)
-            except Exception:  # noqa: BLE001
-                pass
-            return _StartResult(name=name, success=False, error=str(exc))
-        with self._lock:
-            self._forwarders.append(forwarder)
-        return _StartResult(name=name, success=True, connections=entries, forwarder=forwarder)
+                fetched, required_failures = await fetch_files(runtime.conn, node.fetch_files)
+            except _NODE_STARTUP_ERRORS as exc:
+                runtime.error = str(exc)
+                await close_transport(runtime.conn, runtime.listeners)
+                runtime.conn = None
+                runtime.listeners = []
+                return runtime
+            runtime.fetched_files = fetched
+            if required_failures:
+                runtime.error = f"required fetch_files failed: {required_failures}"
+                await close_transport(runtime.conn, runtime.listeners)
+                runtime.conn = None
+                runtime.listeners = []
+                return runtime
 
-    def _build_forwarder(self, node: NodeInput) -> sshtunnel.SSHTunnelForwarder:
-        local_binds: list[tuple[str, int]] = []
-        if node.local_ports is not None:
-            if len(node.local_ports) != len(node.remote_ports):
-                raise TunnelStartupError(
-                    "local_ports must align with remote_ports when provided",
-                    {"node_remote_ports": node.remote_ports},
-                )
-            local_binds = [("127.0.0.1", p) for p in node.local_ports]
-        else:
-            local_binds = [("127.0.0.1", 0) for _ in node.remote_ports]
-        remote_binds = [("127.0.0.1", p) for p in node.remote_ports]
-        kwargs: dict[str, object] = {
-            "ssh_address_or_host": (node.host, node.port),
-            "ssh_username": node.user,
-            "remote_bind_addresses": remote_binds,
-            "local_bind_addresses": local_binds,
-            "compression": node.ssh_options.compression,
-            "set_keepalive": 30.0,
-            # Caller provides credentials explicitly; do not scan ~/.ssh or
-            # consult ssh-agent. Required to avoid sshtunnel triggering
-            # paramiko.DSSKey lookups on paramiko 4.x where the attribute was
-            # removed.
-            "allow_agent": False,
-            "host_pkey_directories": [],
-        }
-        if node.ssh_pkey:
-            kwargs["ssh_pkey"] = load_inline_pkey(node.ssh_pkey, node.ssh_pkey_passphrase)
-        if node.ssh_password:
-            kwargs["ssh_password"] = node.ssh_password
-        forwarder = sshtunnel.SSHTunnelForwarder(**kwargs)
-        forwarder.daemon_forward_servers = True
-        forwarder.daemon_transport = True
-        return forwarder
-
-    def _verify_and_collect(
-        self,
-        node: NodeInput,
-        forwarder: sshtunnel.SSHTunnelForwarder,
-    ) -> list[ConnectionEntry]:
-        entries: list[ConnectionEntry] = []
-        for remote_port, local_bind in zip(
-            node.remote_ports, forwarder.local_bind_addresses, strict=True
-        ):
-            local_host, local_port = local_bind
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-                probe.settimeout(node.ssh_options.connect_timeout)
-                if probe.connect_ex((local_host, local_port)) != 0:
-                    raise TunnelStartupError(
-                        "local forward did not accept connection",
-                        {"remote_port": remote_port, "local_port": local_port},
-                    )
-            entries.append(
-                ConnectionEntry(
-                    remote_host="127.0.0.1",
-                    remote_port=remote_port,
-                    local_host=local_host,
-                    local_port=local_port,
-                )
-            )
-        return entries
+        runtime.success = True
+        self._runtimes.append(runtime)
+        return runtime

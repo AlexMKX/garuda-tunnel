@@ -1,35 +1,83 @@
-"""Stateless PID + token identity check used by `stop` and `status`."""
+"""Stateless PID + token identity check via fcntl.flock on a per-token lockfile.
+
+The daemon acquires an exclusive flock on ``<state_dir>/<token>.lock`` at
+startup and holds the fd for its lifetime. ``verify_token`` consults the
+same file: if it is locked and the recorded PID matches, identity is
+confirmed.
+"""
 
 from __future__ import annotations
 
 import enum
+import fcntl
 import os
-import subprocess
-import sys
 from pathlib import Path
 
-TOKEN_ENV_VAR = "GARUDA_TUNNEL_TOKEN"
+_STATE_SUBDIR = "garuda-tunnel"
 
 
 class IdentityCheckResult(str, enum.Enum):
+    """Outcome of pid+token verification used by stop/status."""
+
+    # Enum members are serialised verbatim via str inheritance; keep lowercase
+    # so JSON output and the equality short-circuits stay readable.
+    # pylint: disable=invalid-name
     match = "match"
     mismatch = "mismatch"
     not_found = "not_found"
     unavailable = "unavailable"
 
 
+def _state_dir() -> Path:
+    """Return the per-user state directory for garuda-tunnel runtime files.
+
+    Honours ``XDG_STATE_HOME``; falls back to ``~/.local/state``. Caller is
+    responsible for creating the directory if it does not yet exist.
+    """
+    xdg = os.environ.get("XDG_STATE_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".local" / "state"
+    return base / _STATE_SUBDIR
+
+
 def verify_token(pid: int, token: str) -> IdentityCheckResult:
-    """Return whether ``pid`` is alive and carries ``GARUDA_TUNNEL_TOKEN=token``."""
+    """Return whether ``pid`` is alive and owns the identity lock for ``token``."""
     if not _process_exists(pid):
         return IdentityCheckResult.not_found
 
-    found = _read_token_env(pid)
-    if found is None:
+    lock_path = _state_dir() / f"{token}.lock"
+    if not lock_path.is_file():
+        return IdentityCheckResult.not_found
+
+    return _check_lock(lock_path, pid)
+
+
+def _check_lock(lock_path: Path, pid: int) -> IdentityCheckResult:
+    """Open ``lock_path`` and determine identity from flock state and recorded PID."""
+    try:
+        fd = os.open(lock_path, os.O_RDONLY)
+    except OSError:
         return IdentityCheckResult.unavailable
-    return IdentityCheckResult.match if found == token else IdentityCheckResult.mismatch
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            # Lock is held — daemon is alive. Verify the PID matches.
+            try:
+                recorded_pid = int(lock_path.read_bytes().strip())
+            except (OSError, ValueError):
+                return IdentityCheckResult.unavailable
+            if recorded_pid != pid:
+                return IdentityCheckResult.mismatch
+            return IdentityCheckResult.match
+        # Got the lock — daemon is dead. Release immediately and report.
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return IdentityCheckResult.not_found
+    finally:
+        os.close(fd)
 
 
 def _process_exists(pid: int) -> bool:
+    """True iff a process with the given PID currently exists."""
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -38,44 +86,3 @@ def _process_exists(pid: int) -> bool:
         # Process exists but is owned by someone else.
         return True
     return True
-
-
-def _read_token_env(pid: int) -> str | None:
-    if sys.platform.startswith("linux"):
-        return _read_token_env_linux(pid)
-    if sys.platform == "darwin":
-        return _read_token_env_macos(pid)
-    return None
-
-
-def _read_token_env_linux(pid: int) -> str | None:
-    environ_path = Path(f"/proc/{pid}/environ")
-    try:
-        data = environ_path.read_bytes()
-    except (FileNotFoundError, PermissionError):
-        return None
-    prefix = f"{TOKEN_ENV_VAR}=".encode()
-    for entry in data.split(b"\0"):
-        if entry.startswith(prefix):
-            return entry[len(prefix) :].decode("utf-8", errors="replace")
-    return None
-
-
-def _read_token_env_macos(pid: int) -> str | None:
-    try:
-        result = subprocess.run(
-            ["ps", "-wwE", "-p", str(pid), "-o", "command="],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=5,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    needle = f"{TOKEN_ENV_VAR}="
-    for token_part in result.stdout.split():
-        if token_part.startswith(needle):
-            return token_part[len(needle) :]
-    return None

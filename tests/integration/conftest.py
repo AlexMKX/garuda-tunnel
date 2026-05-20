@@ -1,3 +1,5 @@
+"""Integration fixtures: docker compose lifecycle, SSH keypair, sample files."""
+
 from __future__ import annotations
 
 import json
@@ -56,7 +58,26 @@ def ssh_keypair() -> tuple[str, str]:
 
 
 @pytest.fixture(scope="session")
-def ssh_test_cluster(ssh_keypair: tuple[str, str]) -> Iterator[dict[str, Any]]:
+def garuda_tunnel_it_dir() -> Path:
+    """Create /tmp/garuda-tunnel-it/ with mode 0o1777 before any docker mount.
+
+    Docker bind-mount on a missing host path creates it as root:0o755, which
+    then prevents the in-runner test process from writing fixture files.
+    Pre-creating the directory with sticky world-writable mode is the same
+    pattern /tmp itself uses and works on every Linux runner.
+    """
+    root = Path("/tmp/garuda-tunnel-it")
+    root.mkdir(parents=True, exist_ok=True)
+    os.chmod(root, 0o1777)
+    return root
+
+
+@pytest.fixture(scope="session")
+def ssh_test_cluster(
+    ssh_keypair: tuple[str, str],
+    garuda_tunnel_it_dir: Path,
+) -> Iterator[dict[str, Any]]:
+    del garuda_tunnel_it_dir  # forces ordering only
     if sys.platform != "linux":
         pytest.skip("integration tests require Linux + Docker")
     compose_file = HERE / "docker-compose.yml"
@@ -76,18 +97,99 @@ def ssh_test_cluster(ssh_keypair: tuple[str, str]) -> Iterator[dict[str, Any]]:
             )
             host, port = result.stdout.strip().rsplit(":", 1)
             ports[service] = int(port)
+        # Bastion service for cross-host forward tests.
+        result = subprocess.run(
+            ["docker", "compose", "-f", str(compose_file), "port", "sshd-bastion", "2222"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        _host, bastion_port_str = result.stdout.strip().rsplit(":", 1)
+        bastion_port = int(bastion_port_str)
+
+        # Wait for HTTP identity servers (no healthcheck, --wait does not cover them).
+        import time
+
+        for target_alias in ("target-1", "target-2"):
+            for attempt in range(30):
+                probe = subprocess.run(
+                    [
+                        "docker",
+                        "compose",
+                        "-f",
+                        str(compose_file),
+                        "exec",
+                        "-T",
+                        "sshd-bastion",
+                        "nc",
+                        "-z",
+                        target_alias,
+                        "80",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if probe.returncode == 0:
+                    break
+                time.sleep(0.5)
+            else:
+                pytest.fail(f"HTTP identity server for {target_alias}:80 never came up")
+
         priv_pem, _pub = ssh_keypair
         yield {
             "ports": ports,
             "private_pem": priv_pem,
             "user": "tester",
             "host": "127.0.0.1",
+            "bastion_port": bastion_port,
+            "target_aliases": ["target-1", "target-2"],
         }
     finally:
         subprocess.run(
             ["docker", "compose", "-f", str(compose_file), "down", "-v"],
             check=False,
         )
+
+
+@pytest.fixture(scope="session")
+def prepared_files(garuda_tunnel_it_dir: Path) -> dict[str, Path]:
+    """Populate /tmp/garuda-tunnel-it/ with fixtures bind-mounted into sshd containers."""
+    root = garuda_tunnel_it_dir
+
+    kubeconfig = root / "kubeconfig"
+    kubeconfig.write_text(
+        "apiVersion: v1\n"
+        "kind: Config\n"
+        "clusters:\n"
+        "- name: test\n"
+        "  cluster:\n"
+        "    server: https://127.0.0.1:6443\n"
+        "users: []\n"
+        "contexts: []\n"
+        'current-context: ""\n'
+    )
+
+    big = root / "big.bin"
+    if not big.exists() or big.stat().st_size != 2 * (1 << 20):
+        with big.open("wb") as fh:
+            fh.write(os.urandom(2 * (1 << 20)))
+
+    no_perm = root / "no-perm.txt"
+    # ensure the path is writable across runs (in case last run left mode 000)
+    if no_perm.exists():
+        os.chmod(no_perm, 0o600)
+    no_perm.write_text("secret\n")
+
+    os.chmod(kubeconfig, 0o644)
+    os.chmod(big, 0o644)
+    os.chmod(no_perm, 0o000)
+
+    return {
+        "kubeconfig": kubeconfig,
+        "big": big,
+        "no_perm": no_perm,
+    }
 
 
 def garuda_tunnel_start(stdin_payload: dict[str, Any]) -> dict[str, Any]:
