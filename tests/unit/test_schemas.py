@@ -1,74 +1,64 @@
+"""InputSchema / NodeInput / OutputSchema base shape.
+
+Validates: minimum-valid input, required pkey-or-password invariant,
+and OutputSchema round-tripping.
+Code: garuda_tunnel/schemas.py
+"""
+
 from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
 
 from garuda_tunnel.schemas import (
-    ConnectionEntry,
     DaemonOptions,
     InputSchema,
     NodeInput,
+    NodeOutput,
     OutputSchema,
     SSHOptions,
     TunnelWarning,
 )
+from tests.unit.conftest import make_node
 
-
-def _node(**overrides: object) -> dict[str, object]:
-    base: dict[str, object] = {
-        "host": "node1.example.net",
-        "user": "ubuntu",
-        "ssh_password": "p",
-        "remote_ports": [6443],
-    }
-    base.update(overrides)
-    return base
+pytestmark = pytest.mark.unit
 
 
 def test_valid_minimum_input_parses() -> None:
-    schema = InputSchema.model_validate({"nodes": {"a": _node()}})
-    assert schema.require == "*"
+    """A minimum-valid InputSchema fills defaults for port/required/options."""
+    schema = InputSchema.model_validate({"nodes": {"a": make_node()}})
     assert schema.nodes["a"].port == 22
+    assert schema.nodes["a"].required is True
     assert isinstance(schema.nodes["a"], NodeInput)
     assert isinstance(schema.daemon, DaemonOptions)
     assert isinstance(schema.nodes["a"].ssh_options, SSHOptions)
 
 
-def test_require_star_or_list() -> None:
-    InputSchema.model_validate({"nodes": {"a": _node()}, "require": "*"})
-    InputSchema.model_validate({"nodes": {"a": _node(), "b": _node()}, "require": ["a"]})
-
-
-def test_require_references_unknown_node() -> None:
-    with pytest.raises(ValidationError) as excinfo:
-        InputSchema.model_validate({"nodes": {"a": _node()}, "require": ["nope"]})
-    assert "unknown nodes" in str(excinfo.value)
-
-
 def test_node_requires_pkey_or_password() -> None:
-    payload = {"nodes": {"a": {"host": "h", "user": "u", "remote_ports": [22]}}}
+    """A node with neither ssh_pkey nor ssh_password is rejected."""
+    payload = {"nodes": {"a": {"host": "h", "user": "u", "remote_targets": {"p": "127.0.0.1:22"}}}}
     with pytest.raises(ValidationError) as excinfo:
         InputSchema.model_validate(payload)
     assert "ssh_pkey or ssh_password" in str(excinfo.value)
 
 
 def test_missing_required_host_fails() -> None:
-    payload = {"nodes": {"a": {"user": "u", "ssh_password": "p", "remote_ports": [22]}}}
+    """A node missing the required host field is rejected."""
+    payload = {
+        "nodes": {"a": {"user": "u", "ssh_password": "p", "remote_targets": {"p": "127.0.0.1:22"}}}
+    }
     with pytest.raises(ValidationError):
         InputSchema.model_validate(payload)
 
 
 def test_output_schema_round_trips() -> None:
+    """OutputSchema round-trips losslessly through JSON."""
     out = OutputSchema(
         connections={
-            "a": [
-                ConnectionEntry(
-                    remote_host="127.0.0.1",
-                    remote_port=6443,
-                    local_host="127.0.0.1",
-                    local_port=40001,
-                )
-            ]
+            "a": NodeOutput(
+                ports={"p": 40001},
+                fetch_files={},
+            )
         },
         pid=12345,
         token="abc",

@@ -20,20 +20,96 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install --upgrade pip
       - run: pip install -e ".[dev]"
-      - run: ruff format --check .
-      - run: ruff check .
-      - run: mypy --strict garuda_tunnel
-      - run: pytest tests/unit -v
+      - name: black --check
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
+        run: black --check .
+      - name: ruff format --check
+        run: ruff format --check .
+      - name: ruff check
+        run: ruff check .
+      - name: pylint
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
+        run: pylint garuda_tunnel/
+      - name: vulture
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
+        run: vulture garuda_tunnel/ vulture_whitelist.py
+      - name: mypy --strict
+        run: mypy --strict garuda_tunnel
+      - name: pytest (unit)
+        # Coverage is recorded only on Linux 3.13; the rest of the matrix
+        # runs tests without coverage to keep them fast. The combine + gate
+        # step in the `coverage` job enforces --fail-under=80.
+        run: |
+          if [ "${{ matrix.os }}" = "ubuntu-latest" ] && [ "${{ matrix.python-version }}" = "3.13" ]; then
+            coverage run -m pytest tests/unit -v
+          else
+            pytest tests/unit -v
+          fi
+      - name: upload coverage data
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-unit
+          path: .coverage*
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
 
   integration:
     runs-on: ubuntu-latest
     needs: unit
+    env:
+      # sitecustomize.py reads this and calls coverage.process_startup() so
+      # every garuda-tunnel subprocess writes its own .coverage.<pid> file.
+      COVERAGE_PROCESS_START: ${{ github.workspace }}/pyproject.toml
+      # Place the repo root on PYTHONPATH so sitecustomize.py is importable
+      # by the subprocess interpreter before it runs the CLI entry-point.
+      PYTHONPATH: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
       - run: python -m pip install --upgrade pip
       - run: pip install -e ".[dev]"
       - run: docker compose version
-      - run: pytest tests/integration -m integration -v
+      - name: pytest integration (subprocess coverage)
+        run: coverage run -m pytest tests/integration -m integration -v
+      - name: upload coverage data
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-integration
+          path: .coverage*
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  coverage:
+    runs-on: ubuntu-latest
+    needs: integration
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade pip coverage
+      - uses: actions/download-artifact@v4
+        with:
+          name: coverage-unit
+          path: cov-unit
+      - uses: actions/download-artifact@v4
+        with:
+          name: coverage-integration
+          path: cov-integration
+      - name: combine + gate
+        run: |
+          cp -v cov-unit/.coverage* cov-integration/.coverage* .
+          coverage combine
+          coverage report --fail-under=80
+          coverage xml -o coverage.xml
+      - name: upload combined report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 7

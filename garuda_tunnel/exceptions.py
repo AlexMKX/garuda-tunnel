@@ -8,6 +8,7 @@ _SECRET_KEYS = frozenset({"ssh_pkey", "ssh_password", "ssh_pkey_passphrase"})
 
 
 def _scrub(details: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of details with secret keys (ssh_pkey/etc) removed."""
     return {k: v for k, v in details.items() if k not in _SECRET_KEYS}
 
 
@@ -15,11 +16,13 @@ class GarudaTunnelError(Exception):
     """Base class for every error this tool reports as structured JSON."""
 
     def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        """Store message and a scrubbed copy of details for JSON output."""
         super().__init__(message)
         self.message = message
         self.details: dict[str, Any] = _scrub(details or {})
 
     def to_error_output(self) -> dict[str, Any]:
+        """Serialise the exception into the public ErrorOutput dict shape."""
         return {
             "error": type(self).__name__,
             "message": self.message,
@@ -28,19 +31,19 @@ class GarudaTunnelError(Exception):
 
 
 class SchemaValidationError(GarudaTunnelError):
-    pass
+    """Input JSON failed pydantic validation; details carries errors()."""
 
 
 class TunnelStartupError(GarudaTunnelError):
-    pass
+    """A single node failed to open its transport or local forward."""
 
 
 class RequiredTunnelFailure(GarudaTunnelError):
-    pass
+    """At least one required node could not be started; the daemon aborts."""
 
 
 class DaemonError(GarudaTunnelError):
-    pass
+    """Generic daemon-side failure surfaced via the IPC handshake."""
 
 
 _EXIT_CODES: dict[type[GarudaTunnelError], int] = {

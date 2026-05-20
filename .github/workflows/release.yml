@@ -9,20 +9,30 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      COVERAGE_PROCESS_START: ${{ github.workspace }}/pyproject.toml
+      PYTHONPATH: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
       - run: python -m pip install --upgrade pip build
       - run: pip install -e ".[dev]"
+      - run: black --check .
       - run: ruff format --check .
       - run: ruff check .
+      - run: pylint garuda_tunnel/
+      - run: vulture garuda_tunnel/ vulture_whitelist.py
       - run: mypy --strict garuda_tunnel
-      - run: pytest tests/unit -v
-      - run: pytest tests/integration -m integration -v
+      - name: combined unit + integration coverage gate
+        run: |
+          coverage run -m pytest tests/unit -v
+          coverage run -m pytest tests/integration -m integration -v
+          coverage combine
+          coverage report --fail-under=80
       - run: python -m build
       - name: Create Release
         uses: softprops/action-gh-release@v2

@@ -1,48 +1,51 @@
+"""SSH private-key loading.
+
+Validates: garuda_tunnel/ssh.py::_load_client_keys accepts the
+supported PEM key types, returns None when no key is configured, and
+raises asyncssh.KeyImportError on garbage input.
+Code: garuda_tunnel/ssh.py
+"""
+
 from __future__ import annotations
 
-from io import StringIO
-
-import paramiko
+import asyncssh
 import pytest
 
-from garuda_tunnel.exceptions import SchemaValidationError
-from garuda_tunnel.manager import load_inline_pkey
+from garuda_tunnel.schemas import InputSchema
+from garuda_tunnel.ssh import _load_client_keys
+from tests.unit.conftest import make_node
+
+pytestmark = pytest.mark.unit
 
 
 def _generate_pem(key_type: str) -> str:
-    if key_type == "ed25519":
-        from cryptography.hazmat.primitives import serialization
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
-            Ed25519PrivateKey,
-        )
-
-        priv = Ed25519PrivateKey.generate()
-        return priv.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.OpenSSH,
-            encryption_algorithm=serialization.NoEncryption(),
-        ).decode()
-    if key_type == "rsa":
-        key = paramiko.RSAKey.generate(bits=2048)
-    elif key_type == "ecdsa":
-        key = paramiko.ECDSAKey.generate()
-    else:
-        raise AssertionError(key_type)
-    buf = StringIO()
-    key.write_private_key(buf)
-    return buf.getvalue()
+    key = asyncssh.generate_private_key(key_type)
+    pem = key.export_private_key()
+    assert isinstance(pem, bytes)
+    return pem.decode()
 
 
-@pytest.mark.parametrize("key_type", ["ed25519", "rsa", "ecdsa"])
-def test_load_inline_pkey_accepts_supported_formats(key_type: str) -> None:
+@pytest.mark.parametrize(
+    "key_type",
+    ["ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256"],
+)
+def test_load_client_keys_accepts_supported_formats(key_type: str) -> None:
+    """Each supported key type is loaded into exactly one client key."""
     pem = _generate_pem(key_type)
-    parsed = load_inline_pkey(pem, passphrase=None)
-    assert parsed is not None
-    assert parsed.get_name()
+    schema = InputSchema.model_validate({"nodes": {"a": make_node(ssh_pkey=pem)}})
+    keys = _load_client_keys(schema.nodes["a"])
+    assert keys is not None
+    assert len(keys) == 1
 
 
-def test_load_inline_pkey_rejects_garbage() -> None:
-    with pytest.raises(SchemaValidationError) as excinfo:
-        load_inline_pkey("not a key", passphrase=None)
-    out = excinfo.value.to_error_output()
-    assert "ssh_pkey" not in out["details"]
+def test_load_client_keys_returns_none_when_pkey_absent() -> None:
+    """Without ssh_pkey the loader returns None (password-only path)."""
+    schema = InputSchema.model_validate({"nodes": {"a": make_node()}})
+    assert _load_client_keys(schema.nodes["a"]) is None
+
+
+def test_load_client_keys_rejects_garbage() -> None:
+    """Invalid PEM data raises asyncssh.KeyImportError."""
+    schema = InputSchema.model_validate({"nodes": {"a": make_node(ssh_pkey="not a key")}})
+    with pytest.raises(asyncssh.KeyImportError):
+        _load_client_keys(schema.nodes["a"])

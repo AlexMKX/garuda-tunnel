@@ -1,3 +1,5 @@
+"""Cross-suite teardown: stop daemons left running by integration tests."""
+
 from __future__ import annotations
 
 import subprocess
@@ -8,6 +10,7 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def kill_orphan_test_daemons(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Stop every garuda-tunnel daemon recorded in ``started_daemons``."""
     # ``started_daemons`` is provided by the integration conftest and is shared
     # across the session; unit tests do not request it and skip cleanup.
     try:

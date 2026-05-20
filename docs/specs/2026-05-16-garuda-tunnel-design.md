@@ -5,6 +5,13 @@
 **Repository**: https://github.com/AlexMKX/garuda-tunnel
 **License**: MIT
 
+> **Superseded.** This document describes the original design as shipped
+> in May 2026 (sshtunnel/paramiko transport, `remote_ports: list[int]`,
+> `connections[node]: list[ConnectionEntry]`, environ-based identity).
+> The current public contract is documented in
+> `docs/specs/2026-05-20-feature-fetch-files-design.md`. This document
+> remains as historical context.
+
 ---
 
 ## Context

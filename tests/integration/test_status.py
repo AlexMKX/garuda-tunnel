@@ -1,3 +1,10 @@
+"""garuda-tunnel status against a real daemon.
+
+Validates: alive-then-dead status transitions, plus token-mismatch
+detection through the real CLI binary.
+Code: garuda_tunnel/cli.py::status
+"""
+
 from __future__ import annotations
 
 import json
@@ -16,6 +23,7 @@ def test_status_alive_then_dead(
     ssh_test_cluster: dict[str, Any],
     started_daemons: list[tuple[int, str]],
 ) -> None:
+    """status flips from alive to dead after stop; wrong token reports not alive."""
     payload = {
         "nodes": {
             "a": {
@@ -23,7 +31,7 @@ def test_status_alive_then_dead(
                 "port": ssh_test_cluster["ports"]["sshd-a"],
                 "user": "tester",
                 "ssh_pkey": ssh_test_cluster["private_pem"],
-                "remote_ports": [6443],
+                "remote_targets": {"p": "127.0.0.1:6443"},
             }
         }
     }
