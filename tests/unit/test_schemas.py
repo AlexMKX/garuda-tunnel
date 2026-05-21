@@ -67,3 +67,33 @@ def test_output_schema_round_trips() -> None:
     )
     rebuilt = OutputSchema.model_validate_json(out.model_dump_json())
     assert rebuilt == out
+
+
+def test_daemon_options_auto_stop_idle_seconds_default_null() -> None:
+    """The auto-stop field defaults to None (disabled)."""
+    opts = DaemonOptions()
+    assert opts.auto_stop_idle_seconds is None
+
+
+def test_daemon_options_auto_stop_idle_seconds_accepts_positive_int() -> None:
+    """A positive integer is accepted."""
+    opts = DaemonOptions(auto_stop_idle_seconds=60)
+    assert opts.auto_stop_idle_seconds == 60
+
+
+def test_daemon_options_auto_stop_idle_seconds_rejects_zero() -> None:
+    """Zero is rejected (timer would fire instantly)."""
+    with pytest.raises(ValidationError):
+        DaemonOptions(auto_stop_idle_seconds=0)
+
+
+def test_daemon_options_auto_stop_idle_seconds_rejects_negative() -> None:
+    """Negative values are rejected."""
+    with pytest.raises(ValidationError):
+        DaemonOptions(auto_stop_idle_seconds=-1)
+
+
+def test_daemon_options_rejects_unknown_field() -> None:
+    """extra=forbid still rejects typos (regression guard)."""
+    with pytest.raises(ValidationError):
+        DaemonOptions(auto_stop_idle_secunds=10)  # typo

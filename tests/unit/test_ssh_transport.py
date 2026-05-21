@@ -119,3 +119,36 @@ async def test_forward_failure_cleans_up_previous_listeners(
     with pytest.raises(asyncssh.ChannelOpenError):
         await open_local_forwards(conn, node)
     first.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_forward_local_port_receives_tracker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """open_local_forwards passes its tracker kwarg through to asyncssh."""
+    schema = InputSchema.model_validate(
+        {"nodes": {"a": make_node(remote_targets={"p": "10.0.0.1:6443"})}}
+    )
+    node = schema.nodes["a"]
+
+    received_tracker: list[object] = []
+
+    async def fake_forward_local_port(
+        listen_host: str,
+        listen_port: int,
+        dest_host: str,
+        dest_port: int,
+        *,
+        tracker: object = None,
+    ) -> MagicMock:
+        received_tracker.append(tracker)
+        return _fake_listener(54321)
+
+    conn = MagicMock()
+    conn.forward_local_port = AsyncMock(side_effect=fake_forward_local_port)
+    monkeypatch.setattr("garuda_tunnel.ssh._probe_local_port", lambda *_args, **_kw: True)
+
+    sentinel = object()
+    await open_local_forwards(conn, node, tracker=sentinel)
+
+    assert received_tracker == [sentinel]

@@ -58,7 +58,9 @@ def _patch_transport_per_host(
             raise asyncssh.PermissionDenied("auth failed")
         return _FakeConn()
 
-    async def fake_open_local_forwards(conn: Any, node: Any) -> tuple[dict[str, int], list[Any]]:
+    async def fake_open_local_forwards(
+        conn: Any, node: Any, *, tracker: Any = None
+    ) -> tuple[dict[str, int], list[Any]]:
         return {"p": 40000}, []
 
     async def fake_fetch_files(conn: Any, specs: Any) -> tuple[dict[str, Any], list[str]]:
