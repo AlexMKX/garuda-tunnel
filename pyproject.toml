@@ -7,7 +7,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dynamic = ["version"]
 dependencies = [
-    "asyncssh>=2.23,<3",
+    "asyncssh @ git+https://github.com/AlexMKX/asyncssh.git@v2.23.0+forward-tracker.1",
     "pydantic>=2.13,<3",
     "click>=8.3,<9",
 ]
@@ -40,6 +40,12 @@ source = "vcs"
 
 [tool.hatch.build.hooks.vcs]
 version-file = "garuda_tunnel/_version.py"
+
+[tool.hatch.metadata]
+# Required because `asyncssh` is pinned to a VCS URL (our fork carrying
+# the ForwardTracker patch). Drop this once upstream asyncssh ships the
+# feature and we revert to a PyPI version constraint.
+allow-direct-references = true
 
 [tool.ruff]
 line-length    = 100

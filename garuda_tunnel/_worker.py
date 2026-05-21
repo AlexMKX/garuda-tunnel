@@ -20,6 +20,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from garuda_tunnel.activity import ActivityTracker
 from garuda_tunnel.exceptions import DaemonError
 from garuda_tunnel.identity import _state_dir
 from garuda_tunnel.manager import TunnelManager
@@ -68,6 +69,27 @@ def _release_identity_lock(lock_fd: int, token: str) -> None:
         os.close(lock_fd)
     except OSError:
         pass
+
+
+async def _idle_watchdog(
+    tracker: ActivityTracker,
+    timeout_seconds: int,
+    stop_event: asyncio.Event,
+) -> None:
+    """Poll the tracker every timeout/4s; set stop_event when idle past threshold.
+
+    Cancellation-safe: returns cleanly on CancelledError so the cleanup
+    finally-block in `_run` can await the task without raising.
+    """
+    poll_interval = max(1.0, timeout_seconds / 4)
+    while not stop_event.is_set():
+        try:
+            await asyncio.sleep(poll_interval)
+        except asyncio.CancelledError:
+            return
+        if tracker.is_idle and tracker.seconds_since_activity >= timeout_seconds:
+            stop_event.set()
+            return
 
 
 def _read_schema_from_stdin() -> InputSchema:
@@ -150,9 +172,26 @@ async def _run(args: argparse.Namespace, lock_fd: int) -> int:
     loop = asyncio.get_running_loop()
     loop.add_signal_handler(signal.SIGTERM, stop_event.set)
     loop.add_signal_handler(signal.SIGINT, stop_event.set)
+
+    idle_task: asyncio.Task[None] | None = None
+    if schema.daemon.auto_stop_idle_seconds is not None:
+        idle_task = asyncio.create_task(
+            _idle_watchdog(
+                tracker=manager.activity_tracker,
+                timeout_seconds=schema.daemon.auto_stop_idle_seconds,
+                stop_event=stop_event,
+            )
+        )
+
     try:
         await stop_event.wait()
     finally:
+        if idle_task is not None:
+            idle_task.cancel()
+            try:
+                await idle_task
+            except asyncio.CancelledError:
+                pass
         await manager.stop_all()
         _release_identity_lock(lock_fd, args.token)
     return 0

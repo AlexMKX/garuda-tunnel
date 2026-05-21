@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 import asyncssh
 
+from garuda_tunnel.activity import ActivityTracker
 from garuda_tunnel.exceptions import RequiredTunnelFailure, TunnelStartupError
 from garuda_tunnel.fetcher import fetch_files
 from garuda_tunnel.schemas import (
@@ -52,6 +53,7 @@ class TunnelManager:
         """Store the parsed input schema; do not open any transport yet."""
         self._schema = schema
         self._runtimes: list[_NodeRuntime] = []
+        self.activity_tracker = ActivityTracker()
 
     async def stop_all(self) -> None:
         """Close every active listener and connection, best-effort."""
@@ -125,7 +127,9 @@ class TunnelManager:
             return runtime
 
         try:
-            entries, listeners = await open_local_forwards(runtime.conn, node)
+            entries, listeners = await open_local_forwards(
+                runtime.conn, node, tracker=self.activity_tracker
+            )
         except _NODE_STARTUP_ERRORS as exc:
             runtime.error = str(exc)
             await close_transport(runtime.conn, [])

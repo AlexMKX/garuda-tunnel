@@ -55,12 +55,24 @@ class SSHOptions(BaseModel):
 
 
 class DaemonOptions(BaseModel):
-    """Daemon-side knobs: optional log file and shutdown grace period."""
+    """Daemon-side knobs: log file, shutdown grace, idle auto-stop."""
 
     model_config = ConfigDict(extra="forbid")
 
     log_file: str | None = None
     shutdown_grace_seconds: int = 10
+    auto_stop_idle_seconds: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Auto-shutdown timeout in seconds. If set, the daemon sends "
+            "itself SIGTERM when no tunnel forward has had an active "
+            "connection for this many seconds. Timer starts when the "
+            "daemon comes up; any open or close of a forward connection "
+            "resets it. Active long-lived connections prevent shutdown. "
+            "Null (default) disables auto-shutdown."
+        ),
+    )
 
 
 class FileSpec(BaseModel):

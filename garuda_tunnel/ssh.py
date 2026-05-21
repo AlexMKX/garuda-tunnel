@@ -53,8 +53,13 @@ async def open_connection(node: NodeInput) -> asyncssh.SSHClientConnection:
 async def open_local_forwards(
     conn: asyncssh.SSHClientConnection,
     node: NodeInput,
+    tracker: asyncssh.ForwardTracker | None = None,
 ) -> tuple[dict[str, int], list[asyncssh.SSHListener]]:
     """Open one direct-tcpip forward per remote_target.
+
+    If ``tracker`` is provided, asyncssh invokes its hooks on every client
+    connect/disconnect on the local listener. Used by the daemon for
+    idle-based auto-shutdown.
 
     Returns ``(handle->local_port, listeners)``. Local bind host is always
     ``127.0.0.1``; the listen port is OS-assigned. ``target.host`` is the
@@ -66,7 +71,13 @@ async def open_local_forwards(
 
     try:
         for handle, target in node.remote_targets.items():
-            listener = await conn.forward_local_port("127.0.0.1", 0, target.host, target.port)
+            listener = await conn.forward_local_port(
+                "127.0.0.1",
+                0,
+                target.host,
+                target.port,
+                tracker=tracker,
+            )
             listeners.append(listener)
             actual_port = listener.get_port()
             if not _probe_local_port("127.0.0.1", actual_port, timeout):

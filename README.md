@@ -22,15 +22,23 @@ nodes whose apiserver binds to `127.0.0.1` only.
 
 ## Install
 
+`uvx` (recommended for one-shot / disposable use — no install needed):
+
 ```bash
-pipx run --spec git+https://github.com/AlexMKX/garuda-tunnel.git@<NEXT_TAG> \
-    garuda-tunnel --help
+uvx --from git+https://github.com/AlexMKX/garuda-tunnel.git garuda-tunnel --help
 ```
 
-For persistent installs:
+`pipx` (persistent install):
 
 ```bash
-pipx install git+https://github.com/AlexMKX/garuda-tunnel.git@<NEXT_TAG>
+pipx install git+https://github.com/AlexMKX/garuda-tunnel.git
+```
+
+For development:
+
+```bash
+git clone https://github.com/AlexMKX/garuda-tunnel.git && cd garuda-tunnel
+pip install -e ".[dev]"
 ```
 
 Requires Python >= 3.10. Linux and macOS supported; Windows works via WSL only.
@@ -56,6 +64,9 @@ JSON=$(cat <<EOF
         "kubeconfig": {"path": "/etc/rancher/k3s/k3s.yaml"}
       }
     }
+  },
+  "daemon": {
+    "auto_stop_idle_seconds": 600
   }
 }
 EOF
@@ -79,6 +90,12 @@ garuda-tunnel stop --pid "$PID" --token "$TOKEN"
 rm -f "$KUBECONFIG_FILE"
 ```
 
+The `daemon.auto_stop_idle_seconds: 600` setting makes the daemon shut
+itself down after 10 minutes with no client connections. Useful for
+ephemeral CI runs that may abort before reaching `garuda-tunnel stop`.
+Omit the field (or set to `null`) to keep the daemon alive until you call
+`stop` explicitly.
+
 ## Input reference (`InputSchema`)
 
 **Top level**
@@ -88,6 +105,7 @@ rm -f "$KUBECONFIG_FILE"
 | `nodes` | `dict[str, NodeInput]` | required | One entry per remote host |
 | `daemon.log_file` | `str \| null` | `null` | If set, daemon's stdout/stderr go here. Never contains fetched content. |
 | `daemon.shutdown_grace_seconds` | `int` | `10` | SIGTERM grace period before SIGKILL |
+| `daemon.auto_stop_idle_seconds` | `int \| null` | `null` | Seconds of idle (no active forward connections) before the daemon SIGTERMs itself. `null` disables. |
 
 **`NodeInput`** (per entry in `nodes`)
 
