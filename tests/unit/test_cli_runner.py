@@ -8,6 +8,7 @@ Code: garuda_tunnel/cli.py
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -121,6 +122,93 @@ def test_start_daemon_error_returns_four(monkeypatch: pytest.MonkeyPatch) -> Non
     assert result.exit_code == 4
     out = json.loads(result.output)
     assert out["error"] == "DaemonError"
+
+
+def test_status_with_session_dir_uses_state_dir(tmp_path: Path) -> None:
+    """status --session-dir threads <sd>/tunnel-data as state_dir to verify_token."""
+    captured: dict[str, Path | None] = {"state_dir": None}
+
+    def fake_verify(_pid: int, _token: str, state_dir: Path | None = None) -> object:
+        from garuda_tunnel.identity import IdentityCheckResult
+
+        captured["state_dir"] = state_dir
+        return IdentityCheckResult.match
+
+    import garuda_tunnel.cli as cli_mod
+
+    monkeypatched = cli_mod.verify_token
+    cli_mod.verify_token = fake_verify  # type: ignore[assignment]
+    try:
+        from click.testing import CliRunner
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli_mod.main,
+            ["status", "--pid", str(os.getpid()), "--token", "tok", "--session-dir", str(tmp_path)],
+        )
+        assert result.exit_code == 0
+        assert captured["state_dir"] == (tmp_path.resolve() / "tunnel-data")
+    finally:
+        cli_mod.verify_token = monkeypatched  # type: ignore[assignment]
+
+
+def test_stop_session_error_reports_and_exits_zero(tmp_path: Path) -> None:
+    """stop --session-dir <nonexistent> returns structured JSON + exit 0."""
+    from click.testing import CliRunner
+
+    from garuda_tunnel.cli import main as cli_main
+
+    runner = CliRunner()
+    missing = tmp_path / "no-such-session"
+    result = runner.invoke(cli_main, ["stop", "--session-dir", str(missing)])
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["stopped"] is False
+    assert (
+        "cannot read identity" in payload["reason"].lower()
+        or "no such" in payload["reason"].lower()
+    )
+
+
+def test_stop_removes_tunnel_data_on_success(tmp_path: Path) -> None:
+    """stop removes <session-dir>/tunnel-data after a successful match path."""
+    from click.testing import CliRunner
+
+    import garuda_tunnel.cli as cli_mod
+    from garuda_tunnel.identity import IdentityCheckResult
+
+    sd = tmp_path / "session"
+    data = sd / "tunnel-data"
+    data.mkdir(parents=True)
+    (data / "daemon.pid").write_text(f"{os.getpid()}\n")
+    (data / "token").write_text("tok\n")
+
+    # Mock verify_token to immediately return match; mock os.kill to no-op
+    # so the kill loop short-circuits via the second os.kill(pid, 0) raising
+    # ProcessLookupError → "stopped: true".
+    monkey_verify = cli_mod.verify_token
+    monkey_kill = cli_mod.os.kill
+
+    def fake_verify(_pid: int, _token: str, state_dir: Path | None = None) -> object:
+        return IdentityCheckResult.match
+
+    call_count = {"n": 0}
+
+    def fake_kill(_pid: int, sig: int) -> None:
+        call_count["n"] += 1
+        if call_count["n"] >= 2:
+            raise ProcessLookupError
+
+    cli_mod.verify_token = fake_verify  # type: ignore[assignment]
+    cli_mod.os.kill = fake_kill  # type: ignore[assignment]
+    try:
+        runner = CliRunner()
+        result = runner.invoke(cli_mod.main, ["stop", "--session-dir", str(sd)])
+        assert result.exit_code == 0
+        assert not data.exists(), f"tunnel-data should be removed; result={result.output!r}"
+    finally:
+        cli_mod.verify_token = monkey_verify  # type: ignore[assignment]
+        cli_mod.os.kill = monkey_kill  # type: ignore[assignment]
 
 
 def _make_session_dir(pid: int, token: str) -> str:
