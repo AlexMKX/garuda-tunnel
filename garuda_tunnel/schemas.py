@@ -99,6 +99,41 @@ class FileSpec(BaseModel):
         return value
 
 
+class KubeTarget(BaseModel):
+    """One kubeconfig to fetch, forward, SAN-probe, and patch.
+
+    Exactly one cluster is handled: the kubeconfig's current-context.
+    `tls_server_name` overrides the SAN probe entirely. `insecure_fallback`
+    governs what happens when no usable TLS name can be determined.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kubeconfig_path: str = Field(min_length=1, max_length=4096)
+    tls_server_name: str | None = None
+    insecure_fallback: bool = Field(
+        default=False,
+        description=(
+            "If the SAN probe yields no usable name and no tls_server_name is "
+            "given: True emits insecure-skip-tls-verify (drops CA) + a warning; "
+            "False fails the target (subject to `required`)."
+        ),
+    )
+    required: bool = Field(
+        default=True,
+        description="If False, this target's failure does not fail the node.",
+    )
+
+    @field_validator("kubeconfig_path")
+    @classmethod
+    def _validate_absolute(cls, value: str) -> str:
+        if value.startswith("~"):
+            raise ValueError("kubeconfig_path must be literal (no '~' expansion)")
+        if not value.startswith("/"):
+            raise ValueError("kubeconfig_path must be absolute (start with '/')")
+        return value
+
+
 class RemoteTarget(BaseModel):
     """Parsed host:port target. Stored on NodeInput after validation."""
 
@@ -130,6 +165,7 @@ class NodeInput(BaseModel):
         ),
     )
     fetch_files: dict[str, FileSpec] | None = None
+    kube_targets: dict[str, KubeTarget] | None = None
 
     @field_validator("remote_targets", mode="before")
     @classmethod
@@ -182,6 +218,24 @@ class NodeInput(BaseModel):
                 raise ValueError(f"fetch_files key {name!r}: max 64 chars")
             if not _FETCH_FILES_KEY_RE.match(name):
                 raise ValueError(f"fetch_files key {name!r}: must match ^[a-zA-Z_][a-zA-Z0-9_-]*$")
+        return value
+
+    @field_validator("kube_targets")
+    @classmethod
+    def _validate_kube_targets(
+        cls, value: dict[str, KubeTarget] | None
+    ) -> dict[str, KubeTarget] | None:
+        if value is None:
+            return None
+        if len(value) == 0:
+            raise ValueError("kube_targets: omit field instead of empty dict")
+        if len(value) > 16:
+            raise ValueError("kube_targets: at most 16 entries per node")
+        for name in value:
+            if len(name) > 64:
+                raise ValueError(f"kube_targets key {name!r}: max 64 chars")
+            if not _FETCH_FILES_KEY_RE.match(name):
+                raise ValueError(f"kube_targets key {name!r}: must match ^[a-zA-Z_][a-zA-Z0-9_-]*$")
         return value
 
 
