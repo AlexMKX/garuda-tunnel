@@ -1,0 +1,80 @@
+"""Session-directory resolution, tunnel-data creation, and cleanup.
+
+Validates: a generated dir is removed wholesale; a supplied dir keeps
+only tunnel-data removed; tunnel-data is 0700; an existing/symlinked
+tunnel-data is rejected.
+Code: garuda_tunnel/session.py
+Assertion: directory existence/mode after open/cleanup matches the rules;
+SessionError is raised on a hostile tunnel-data.
+Method: drive SessionDir against tmp_path with crafted preconditions.
+"""
+
+from __future__ import annotations
+
+import os
+import stat
+from pathlib import Path
+
+import pytest
+
+from garuda_tunnel.session import SessionDir, SessionError
+
+pytestmark = pytest.mark.unit
+
+
+def test_generated_dir_cleanup_removes_whole_dir(tmp_path: Path) -> None:
+    """A daemon-generated session dir is removed entirely on cleanup."""
+    sd = SessionDir.create(supplied=None, base=tmp_path)
+    root = Path(sd.session_dir)
+    assert (root / "tunnel-data").is_dir()
+    sd.cleanup()
+    assert not root.exists()
+
+
+def test_supplied_dir_cleanup_keeps_dir(tmp_path: Path) -> None:
+    """A supplied session dir keeps the dir; only tunnel-data is removed."""
+    supplied = tmp_path / "work"
+    supplied.mkdir()
+    sd = SessionDir.create(supplied=str(supplied), base=tmp_path)
+    assert (supplied / "tunnel-data").is_dir()
+    sd.cleanup()
+    assert supplied.exists()
+    assert not (supplied / "tunnel-data").exists()
+
+
+def test_tunnel_data_is_0700(tmp_path: Path) -> None:
+    """tunnel-data is created with mode 0700."""
+    sd = SessionDir.create(supplied=None, base=tmp_path)
+    mode = stat.S_IMODE(os.stat(Path(sd.session_dir) / "tunnel-data").st_mode)
+    assert mode == 0o700
+
+
+def test_rejects_existing_tunnel_data(tmp_path: Path) -> None:
+    """A pre-existing tunnel-data in a supplied dir is rejected (orphan/foreign)."""
+    supplied = tmp_path / "work"
+    (supplied / "tunnel-data").mkdir(parents=True)
+    with pytest.raises(SessionError):
+        SessionDir.create(supplied=str(supplied), base=tmp_path)
+
+
+def test_rejects_symlink_tunnel_data(tmp_path: Path) -> None:
+    """A symlinked tunnel-data is rejected (no symlink-following)."""
+    supplied = tmp_path / "work"
+    supplied.mkdir()
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    (supplied / "tunnel-data").symlink_to(target)
+    with pytest.raises(SessionError):
+        SessionDir.create(supplied=str(supplied), base=tmp_path)
+
+
+def test_write_identity_and_materialize(tmp_path: Path) -> None:
+    """Identity files and a materialized file land in tunnel-data, mode 0600."""
+    sd = SessionDir.create(supplied=None, base=tmp_path)
+    sd.write_identity(pid=4321, token="tok")
+    path = sd.materialize("hub-k3s", b"kubeconfig-bytes")
+    data_dir = Path(sd.session_dir) / "tunnel-data"
+    assert (data_dir / "daemon.pid").read_text().strip() == "4321"
+    assert (data_dir / "token").read_text().strip() == "tok"
+    assert Path(path).read_bytes() == b"kubeconfig-bytes"
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
