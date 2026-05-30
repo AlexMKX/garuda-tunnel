@@ -79,3 +79,24 @@ def test_node_kube_targets_happy_path() -> None:
     kt = schema.nodes["a"].kube_targets
     assert kt is not None
     assert kt["k3s"].kubeconfig_path == "/etc/rancher/k3s/k3s.yaml"
+
+
+def test_kube_target_rejects_too_long_path() -> None:
+    """Paths exceeding the documented 4096-char cap are rejected."""
+    with pytest.raises(ValidationError):
+        KubeTarget.model_validate({"kubeconfig_path": "/" + "a" * 4100})
+
+
+def test_node_kube_targets_rejects_too_many_entries() -> None:
+    """kube_targets rejects more than 16 entries per node."""
+    entries = {f"k{i}": {"kubeconfig_path": f"/etc/k{i}.yaml"} for i in range(17)}
+    with pytest.raises(ValidationError):
+        InputSchema.model_validate({"nodes": {"a": make_node(kube_targets=entries)}})
+
+
+def test_node_kube_targets_rejects_too_long_key() -> None:
+    """kube_targets keys exceeding the 64-char cap are rejected."""
+    with pytest.raises(ValidationError):
+        InputSchema.model_validate(
+            {"nodes": {"a": make_node(kube_targets={"a" * 65: {"kubeconfig_path": "/x"}})}}
+        )
