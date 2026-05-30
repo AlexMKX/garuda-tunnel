@@ -109,3 +109,10 @@ async def test_run_kube_target_success(monkeypatch: pytest.MonkeyPatch) -> None:
     assert out.tls_server_name in {"dev-kube-1", "10.0.0.11"}
     assert out.local_port == 40123
     assert out.content_b64  # non-empty patched kubeconfig
+
+
+def test_default_probe_is_callable() -> None:
+    """A default TLS probe is exported for production use."""
+    from garuda_tunnel.kube import default_san_probe
+
+    assert callable(default_san_probe)

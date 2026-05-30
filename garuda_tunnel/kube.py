@@ -12,6 +12,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import socket as _socket
+import ssl as _ssl
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -32,6 +34,7 @@ __all__ = [
     "KubeconfigView",
     "ProbeFn",
     "choose_tls_server_name",
+    "default_san_probe",
     "dump_kubeconfig",
     "parse_kubeconfig",
     "patch_view",
@@ -390,3 +393,25 @@ async def _resolve_tls(  # pylint: disable=too-many-arguments
             )
         )
     return chosen, False
+
+
+async def default_san_probe(host: str, port: int) -> bytes:
+    """TLS-handshake to host:port and return the peer certificate in DER form.
+
+    Verification is disabled for the handshake itself (we only want the cert
+    to read its SAN); the resulting tls-server-name is what re-enables real
+    verification for the client. Runs the blocking socket work in a thread.
+    """
+
+    def _connect() -> bytes:
+        ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        with _socket.create_connection((host, port), timeout=10) as sock:
+            with ctx.wrap_socket(sock, server_hostname=None) as tls:
+                der = tls.getpeercert(binary_form=True)
+        if der is None:
+            raise OSError("no peer certificate presented")
+        return der
+
+    return await asyncio.to_thread(_connect)
