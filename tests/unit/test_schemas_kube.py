@@ -1,0 +1,81 @@
+"""KubeTarget + NodeInput.kube_targets validation.
+
+Validates: KubeTarget path rules, default values, and kube_targets
+key/value limits on NodeInput.
+Code: garuda_tunnel/schemas.py
+Assertion: invalid paths/keys raise ValidationError; defaults resolve
+to insecure_fallback=False and required=True.
+Method: construct models via model_validate and assert resolved fields.
+"""
+
+from __future__ import annotations
+
+import pytest
+from pydantic import ValidationError
+
+from garuda_tunnel.schemas import InputSchema, KubeTarget, NodeInput
+from tests.unit.conftest import make_node
+
+pytestmark = pytest.mark.unit
+
+
+def test_kube_target_defaults() -> None:
+    """KubeTarget defaults: insecure_fallback False, required True, tls hint None."""
+    kt = KubeTarget.model_validate({"kubeconfig_path": "/etc/rancher/k3s/k3s.yaml"})
+    assert kt.insecure_fallback is False
+    assert kt.required is True
+    assert kt.tls_server_name is None
+
+
+def test_kube_target_rejects_relative_path() -> None:
+    """A relative kubeconfig_path is rejected."""
+    with pytest.raises(ValidationError):
+        KubeTarget.model_validate({"kubeconfig_path": "etc/k3s.yaml"})
+
+
+def test_kube_target_rejects_tilde_path() -> None:
+    """A tilde-prefixed kubeconfig_path is rejected (no shell expansion)."""
+    with pytest.raises(ValidationError):
+        KubeTarget.model_validate({"kubeconfig_path": "~/.kube/config"})
+
+
+def test_kube_target_rejects_extra_field() -> None:
+    """KubeTarget is closed (extra='forbid')."""
+    with pytest.raises(ValidationError):
+        KubeTarget.model_validate({"kubeconfig_path": "/x", "bogus": 1})
+
+
+def test_node_kube_targets_default_none() -> None:
+    """NodeInput.kube_targets defaults to None when omitted."""
+    node = NodeInput.model_validate(make_node())
+    assert node.kube_targets is None
+
+
+def test_node_kube_targets_rejects_empty_dict() -> None:
+    """An empty kube_targets dict is rejected (omit instead)."""
+    with pytest.raises(ValidationError):
+        InputSchema.model_validate({"nodes": {"a": make_node(kube_targets={})}})
+
+
+def test_node_kube_targets_rejects_bad_key() -> None:
+    """kube_targets keys must match the identifier pattern."""
+    with pytest.raises(ValidationError):
+        InputSchema.model_validate(
+            {"nodes": {"a": make_node(kube_targets={"bad name": {"kubeconfig_path": "/x"}})}}
+        )
+
+
+def test_node_kube_targets_happy_path() -> None:
+    """A well-formed kube_targets block parses into KubeTarget values."""
+    schema = InputSchema.model_validate(
+        {
+            "nodes": {
+                "a": make_node(
+                    kube_targets={"k3s": {"kubeconfig_path": "/etc/rancher/k3s/k3s.yaml"}}
+                )
+            }
+        }
+    )
+    kt = schema.nodes["a"].kube_targets
+    assert kt is not None
+    assert kt["k3s"].kubeconfig_path == "/etc/rancher/k3s/k3s.yaml"
