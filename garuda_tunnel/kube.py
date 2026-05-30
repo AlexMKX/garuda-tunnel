@@ -151,19 +151,27 @@ def _find_named(items: object, name: str) -> dict[str, object] | None:
 def sans_from_cert(cert_der: bytes) -> tuple[list[str], list[str]]:
     """Return (dns_sans, ip_sans) parsed from a DER-encoded certificate.
 
-    On any parse failure or absent SAN extension, returns ([], []).
+    A certificate with no SAN extension returns ([], []). A malformed
+    certificate also returns ([], []) — both are "no usable name" for the
+    caller, which then applies its insecure_fallback policy. Narrowly catches
+    the two expected cryptography failure modes; anything else propagates.
     """
     try:
         cert = x509.load_der_x509_certificate(cert_der)
-        ext = cert.extensions.get_extension_for_oid(ExtensionOID.SUBJECT_ALTERNATIVE_NAME)
-        san: x509.SubjectAlternativeName = ext.value  # type: ignore[assignment]
-        dns = list(san.get_values_for_type(x509.DNSName))
-        ips = [str(ip) for ip in san.get_values_for_type(x509.IPAddress)]
-        return dns, ips
-    except Exception:  # noqa: BLE001  # pylint: disable=broad-exception-caught
-        # A malformed/absent SAN is not a daemon error: the caller treats an
-        # empty result as "no usable name" and applies insecure_fallback policy.
+    except ValueError:
+        # Malformed DER — treated as "no usable name", not a daemon crash.
         return [], []
+    try:
+        ext = cert.extensions.get_extension_for_oid(ExtensionOID.SUBJECT_ALTERNATIVE_NAME)
+    except x509.ExtensionNotFound:
+        # Cert has no SAN extension at all.
+        return [], []
+    san = ext.value
+    if not isinstance(san, x509.SubjectAlternativeName):
+        return [], []
+    dns = list(san.get_values_for_type(x509.DNSName))
+    ips = [str(ip) for ip in san.get_values_for_type(x509.IPAddress)]
+    return dns, ips
 
 
 def choose_tls_server_name(

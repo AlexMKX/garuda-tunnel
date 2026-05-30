@@ -1,18 +1,28 @@
-"""TLS server-name selection from a certificate's SAN list.
+"""TLS server-name selection from a certificate's SAN list, and SAN parsing.
 
 Validates: prefer the original server host; else first DNS SAN; else
 first IP SAN; empty SAN returns None. A non-exact match is flagged.
+Also validates sans_from_cert for malformed DER, absent SAN extension,
+and the normal DNS+IP extraction path.
 Code: garuda_tunnel/kube.py
 Assertion: choose_tls_server_name returns the documented preference and
-a `fellback` flag indicating a non-exact match.
-Method: call choose_tls_server_name with crafted SAN lists.
+a `fellback` flag indicating a non-exact match; sans_from_cert returns
+([], []) on failure and (dns, ips) on success.
+Method: call functions with crafted inputs and DER-encoded certificates.
 """
 
 from __future__ import annotations
 
-import pytest
+import datetime
+import ipaddress
 
-from garuda_tunnel.kube import choose_tls_server_name
+import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519
+from cryptography.x509.oid import NameOID
+
+from garuda_tunnel.kube import choose_tls_server_name, sans_from_cert
 
 pytestmark = pytest.mark.unit
 
@@ -66,3 +76,51 @@ def test_empty_san_returns_none() -> None:
     name, fellback = choose_tls_server_name(original_host="127.0.0.1", dns_sans=[], ip_sans=[])
     assert name is None
     assert fellback is True
+
+
+# ---------------------------------------------------------------------------
+# sans_from_cert
+# ---------------------------------------------------------------------------
+
+
+def _make_cert(*, add_san: bool) -> bytes:
+    """Build a minimal self-signed DER certificate, optionally with a SAN."""
+    key = ed25519.Ed25519PrivateKey.generate()
+    subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "test")])
+    builder = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.datetime(2020, 1, 1))
+        .not_valid_after(datetime.datetime(2030, 1, 1))
+    )
+    if add_san:
+        builder = builder.add_extension(
+            x509.SubjectAlternativeName(
+                [
+                    x509.DNSName("dev-kube-1"),
+                    x509.IPAddress(ipaddress.ip_address("192.0.2.11")),
+                ]
+            ),
+            critical=False,
+        )
+    return builder.sign(key, None).public_bytes(serialization.Encoding.DER)
+
+
+def test_sans_from_cert_malformed_returns_empty() -> None:
+    """Malformed DER bytes yield ([], []) — not a crash."""
+    assert sans_from_cert(b"not-a-cert") == ([], [])
+
+
+def test_sans_from_cert_no_san_returns_empty() -> None:
+    """A cert with no SAN extension yields ([], [])."""
+    assert sans_from_cert(_make_cert(add_san=False)) == ([], [])
+
+
+def test_sans_from_cert_extracts_dns_and_ip() -> None:
+    """A cert with DNS+IP SANs returns them split into (dns, ip)."""
+    dns, ips = sans_from_cert(_make_cert(add_san=True))
+    assert dns == ["dev-kube-1"]
+    assert ips == ["192.0.2.11"]
