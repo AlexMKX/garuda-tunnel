@@ -17,6 +17,7 @@ import ssl as _ssl
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 from cryptography import x509
 from cryptography.x509.oid import ExtensionOID
@@ -145,15 +146,6 @@ def _find_named(items: object, name: str) -> dict[str, object] | None:
         if isinstance(entry, dict) and entry.get("name") == name:
             return entry
     return None
-
-
-def _host_of(server: str) -> str:
-    """Extract the host from an https URL (strip scheme, port, path)."""
-    rest = server.split("://", 1)[-1]
-    authority = rest.split("/", 1)[0]
-    if authority.startswith("["):  # [ipv6]:port
-        return authority[1 : authority.find("]")]
-    return authority.rsplit(":", 1)[0] if ":" in authority else authority
 
 
 def sans_from_cert(cert_der: bytes) -> tuple[list[str], list[str]]:
@@ -291,7 +283,13 @@ async def run_kube_targets(  # pylint: disable=too-many-locals,too-many-branches
                 )
             )
 
-        host, port = _split_host_port(view.server)
+        try:
+            host, port = _split_host_port(view.server)
+        except KubeParseError as exc:
+            warnings.append(TunnelWarning(node=node_name, error=f"kube_target {name}: {exc}"))
+            if target.required:
+                required_failures.append(name)
+            continue
         listener = await conn.forward_local_port("127.0.0.1", 0, host, port)
         local_port = listener.get_port()
 
@@ -333,10 +331,26 @@ async def run_kube_targets(  # pylint: disable=too-many-locals,too-many-branches
 
 
 def _split_host_port(server: str) -> tuple[str, int]:
-    host = _host_of(server)
-    rest = server.split("://", 1)[-1].split("/", 1)[0]
-    port_part = rest.rsplit(":", 1)[-1] if ":" in rest and not rest.endswith("]") else "443"
-    return host, int(port_part)
+    """Parse a kubeconfig ``server`` URL into (host, port).
+
+    Uses urllib for robust parsing (handles IPv6 brackets, paths, query
+    strings). Only https is accepted; a missing port defaults to 443.
+    Raises KubeParseError on a malformed or non-https server URL.
+    """
+    try:
+        parts = urlsplit(server)
+    except ValueError as exc:
+        raise KubeParseError(f"server URL is malformed: {server!r}: {exc}") from exc
+    if parts.scheme != "https":
+        raise KubeParseError(f"server URL must be https, got {parts.scheme!r}: {server!r}")
+    host = parts.hostname
+    if not host:
+        raise KubeParseError(f"server URL has no host: {server!r}")
+    try:
+        port = parts.port
+    except ValueError as exc:
+        raise KubeParseError(f"server URL has an invalid port: {server!r}: {exc}") from exc
+    return host, port if port is not None else 443
 
 
 async def _fetch_one(conn: "asyncssh.SSHClientConnection", path: str) -> bytes:
