@@ -303,7 +303,6 @@ async def run_kube_targets(  # pylint: disable=too-many-locals,too-many-branches
 
         tls_name, insecure = await _resolve_tls(
             target=target,
-            view=view,
             host=host,
             local_port=local_port,
             probe=probe,
@@ -375,10 +374,9 @@ async def _fetch_one(conn: "asyncssh.SSHClientConnection", path: str) -> bytes:
     return raw
 
 
-async def _resolve_tls(  # pylint: disable=too-many-arguments
+async def _resolve_tls(
     *,
     target: KubeTarget,
-    view: KubeconfigView,
     host: str,
     local_port: int,
     probe: ProbeFn,
@@ -387,7 +385,6 @@ async def _resolve_tls(  # pylint: disable=too-many-arguments
     warnings: list[TunnelWarning],
 ) -> tuple[str | None, bool]:
     """Determine (tls_server_name, insecure) for one target."""
-    del view  # reserved for future per-view hints
     if target.tls_server_name is not None:
         return target.tls_server_name, False
     cert_der = await probe("127.0.0.1", local_port)
