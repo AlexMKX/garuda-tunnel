@@ -124,38 +124,32 @@ def test_start_daemon_error_returns_four(monkeypatch: pytest.MonkeyPatch) -> Non
     assert out["error"] == "DaemonError"
 
 
-def test_status_with_session_dir_uses_state_dir(tmp_path: Path) -> None:
+def test_status_with_session_dir_uses_state_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """status --session-dir threads <sd>/tunnel-data as state_dir to verify_token."""
+    from garuda_tunnel.identity import IdentityCheckResult
+
     captured: dict[str, Path | None] = {"state_dir": None}
 
     def fake_verify(_pid: int, _token: str, state_dir: Path | None = None) -> object:
-        from garuda_tunnel.identity import IdentityCheckResult
-
         captured["state_dir"] = state_dir
         return IdentityCheckResult.match
 
     import garuda_tunnel.cli as cli_mod
 
-    monkeypatched = cli_mod.verify_token
-    cli_mod.verify_token = fake_verify  # type: ignore[assignment]
-    try:
-        from click.testing import CliRunner
-
-        runner = CliRunner()
-        result = runner.invoke(
-            cli_mod.main,
-            ["status", "--pid", str(os.getpid()), "--token", "tok", "--session-dir", str(tmp_path)],
-        )
-        assert result.exit_code == 0
-        assert captured["state_dir"] == (tmp_path.resolve() / "tunnel-data")
-    finally:
-        cli_mod.verify_token = monkeypatched  # type: ignore[assignment]
+    monkeypatch.setattr(cli_mod, "verify_token", fake_verify)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_mod.main,
+        ["status", "--pid", str(os.getpid()), "--token", "tok", "--session-dir", str(tmp_path)],
+    )
+    assert result.exit_code == 0
+    assert captured["state_dir"] == (tmp_path.resolve() / "tunnel-data")
 
 
 def test_stop_session_error_reports_and_exits_zero(tmp_path: Path) -> None:
     """stop --session-dir <nonexistent> returns structured JSON + exit 0."""
-    from click.testing import CliRunner
-
     from garuda_tunnel.cli import main as cli_main
 
     runner = CliRunner()
@@ -170,10 +164,10 @@ def test_stop_session_error_reports_and_exits_zero(tmp_path: Path) -> None:
     )
 
 
-def test_stop_removes_tunnel_data_on_success(tmp_path: Path) -> None:
+def test_stop_removes_tunnel_data_on_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """stop removes <session-dir>/tunnel-data after a successful match path."""
-    from click.testing import CliRunner
-
     import garuda_tunnel.cli as cli_mod
     from garuda_tunnel.identity import IdentityCheckResult
 
@@ -182,12 +176,6 @@ def test_stop_removes_tunnel_data_on_success(tmp_path: Path) -> None:
     data.mkdir(parents=True)
     (data / "daemon.pid").write_text(f"{os.getpid()}\n")
     (data / "token").write_text("tok\n")
-
-    # Mock verify_token to immediately return match; mock os.kill to no-op
-    # so the kill loop short-circuits via the second os.kill(pid, 0) raising
-    # ProcessLookupError → "stopped: true".
-    monkey_verify = cli_mod.verify_token
-    monkey_kill = cli_mod.os.kill
 
     def fake_verify(_pid: int, _token: str, state_dir: Path | None = None) -> object:
         return IdentityCheckResult.match
@@ -199,16 +187,13 @@ def test_stop_removes_tunnel_data_on_success(tmp_path: Path) -> None:
         if call_count["n"] >= 2:
             raise ProcessLookupError
 
-    cli_mod.verify_token = fake_verify  # type: ignore[assignment]
-    cli_mod.os.kill = fake_kill  # type: ignore[assignment]
-    try:
-        runner = CliRunner()
-        result = runner.invoke(cli_mod.main, ["stop", "--session-dir", str(sd)])
-        assert result.exit_code == 0
-        assert not data.exists(), f"tunnel-data should be removed; result={result.output!r}"
-    finally:
-        cli_mod.verify_token = monkey_verify  # type: ignore[assignment]
-        cli_mod.os.kill = monkey_kill  # type: ignore[assignment]
+    monkeypatch.setattr(cli_mod, "verify_token", fake_verify)
+    monkeypatch.setattr(os, "kill", fake_kill)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_mod.main, ["stop", "--session-dir", str(sd)])
+    assert result.exit_code == 0
+    assert not data.exists(), f"tunnel-data should be removed; result={result.output!r}"
 
 
 def _make_session_dir(pid: int, token: str) -> str:
@@ -272,9 +257,7 @@ def test_status_unknown_pid_reports_not_alive() -> None:
 
 def test_status_no_token_pid_alive(monkeypatch: pytest.MonkeyPatch) -> None:
     """status without token returns alive=true when the PID exists."""
-    import os as _os
-
-    monkeypatch.setattr(_os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(os, "kill", lambda pid, sig: None)
     result = CliRunner().invoke(main, ["status", "--pid", "12345"])
     assert result.exit_code == 0
     out = json.loads(result.output)
