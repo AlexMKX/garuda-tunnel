@@ -94,7 +94,7 @@ async def test_run_kube_target_success(monkeypatch: pytest.MonkeyPatch) -> None:
     """A healthy kube_target yields a patched output with the local endpoint."""
     monkeypatch.setattr(
         "garuda_tunnel.kube.sans_from_cert",
-        lambda _der: (["dev-kube-1", "10.0.0.11"], []),
+        lambda _der: (["dev-kube-1", "192.0.2.11"], []),
     )
     conn = _FakeConn((FIXTURES / "single_internal_ip.yaml").read_bytes())
     outputs, required_failures, warnings = await run_kube_targets(
@@ -106,7 +106,7 @@ async def test_run_kube_target_success(monkeypatch: pytest.MonkeyPatch) -> None:
     assert required_failures == []
     out = outputs["k3s"]
     assert out.endpoint == "https://127.0.0.1:40123"
-    assert out.tls_server_name in {"dev-kube-1", "10.0.0.11"}
+    assert out.tls_server_name in {"dev-kube-1", "192.0.2.11"}
     assert out.local_port == 40123
     assert out.content_b64  # non-empty patched kubeconfig
 

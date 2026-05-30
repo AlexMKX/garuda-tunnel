@@ -32,7 +32,7 @@ def test_prefers_original_host_when_in_san() -> None:
     name, fellback = choose_tls_server_name(
         original_host="am.prod.kube.example.net",
         dns_sans=["am.prod.kube.example.net", "kubernetes"],
-        ip_sans=["10.0.0.40"],
+        ip_sans=["192.0.2.40"],
     )
     assert name == "am.prod.kube.example.net"
     assert fellback is False
@@ -43,7 +43,7 @@ def test_falls_back_to_first_dns_san() -> None:
     name, fellback = choose_tls_server_name(
         original_host="127.0.0.1",
         dns_sans=["kubernetes", "kubernetes.default"],
-        ip_sans=["10.0.0.40"],
+        ip_sans=["192.0.2.40"],
     )
     assert name == "kubernetes"
     assert fellback is True
@@ -54,20 +54,20 @@ def test_falls_back_to_first_ip_san() -> None:
     name, fellback = choose_tls_server_name(
         original_host="127.0.0.1",
         dns_sans=[],
-        ip_sans=["10.0.0.40", "10.0.0.50"],
+        ip_sans=["192.0.2.40", "192.0.2.50"],
     )
-    assert name == "10.0.0.40"
+    assert name == "192.0.2.40"
     assert fellback is True
 
 
 def test_prefers_original_host_when_in_ip_san() -> None:
     """Original host matches an IP SAN entry → chosen, no fallback (mirrors DNS case)."""
     name, fellback = choose_tls_server_name(
-        original_host="10.0.0.40",
+        original_host="192.0.2.40",
         dns_sans=["kubernetes"],
-        ip_sans=["10.0.0.40", "127.0.0.1"],
+        ip_sans=["192.0.2.40", "127.0.0.1"],
     )
-    assert name == "10.0.0.40"
+    assert name == "192.0.2.40"
     assert fellback is False
 
 

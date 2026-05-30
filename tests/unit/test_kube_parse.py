@@ -31,7 +31,7 @@ def test_parse_single_internal_ip() -> None:
     view = parse_kubeconfig(_read("single_internal_ip.yaml"))
     assert view.context_name == "production"
     assert view.cluster_name == "production"
-    assert view.server == "https://10.0.0.11:6443"
+    assert view.server == "https://192.0.2.11:6443"
     assert view.certificate_authority_data == "Y2EtZGF0YQ=="
     assert view.client_certificate_data == "Y2VydC1kYXRh"
     assert view.client_key_data == "a2V5LWRhdGE="
@@ -49,7 +49,7 @@ def test_parse_multi_context_reports_ignored() -> None:
     """A multi-context file selects current-context and reports the others."""
     view = parse_kubeconfig(_read("multi_context.yaml"))
     assert view.context_name == "staging"
-    assert view.server == "https://10.0.0.40:6443"
+    assert view.server == "https://192.0.2.40:6443"
     assert "kubernetes-admin@kubernetes" in view.ignored_contexts
 
 
