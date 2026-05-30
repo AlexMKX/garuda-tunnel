@@ -29,8 +29,17 @@ def _wait_for_apiserver(compose_file: Path, service: str, port: int = 6443) -> N
     for _ in range(60):
         probe = subprocess.run(
             [
-                "docker", "compose", "-f", str(compose_file), "exec", "-T",
-                "sshd-bastion", "nc", "-z", service, str(port),
+                "docker",
+                "compose",
+                "-f",
+                str(compose_file),
+                "exec",
+                "-T",
+                "sshd-bastion",
+                "nc",
+                "-z",
+                service,
+                str(port),
             ],
             capture_output=True,
             text=True,
@@ -141,5 +150,7 @@ def test_kube_target_insecure_fallback(
 
     subprocess.run(
         ["garuda-tunnel", "stop", "--session-dir", session_dir],
-        text=True, capture_output=True, check=False,
+        text=True,
+        capture_output=True,
+        check=False,
     )

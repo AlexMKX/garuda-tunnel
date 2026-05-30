@@ -105,7 +105,7 @@ def test_stop_already_dead() -> None:
     with tempfile.TemporaryDirectory(prefix="garuda-stop-test-") as fake_session:
         data_dir = Path(fake_session) / "tunnel-data"
         data_dir.mkdir(mode=0o700)
-        (data_dir / "daemon.pid").write_text(f"{2 ** 31 - 1}\n")
+        (data_dir / "daemon.pid").write_text(f"{2**31 - 1}\n")
         (data_dir / "token").write_text("irrelevant\n")
 
         stop = subprocess.run(
