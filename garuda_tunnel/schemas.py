@@ -289,13 +289,36 @@ class FetchedFile(BaseModel):
         return self
 
 
+class KubeTargetOutput(BaseModel):
+    """Extracted, ready-to-use fields for one kube_target's current-context cluster.
+
+    `content_b64` is the full patched kubeconfig. `path` is set only when
+    daemon.materialize is True. On insecure fallback,
+    `certificate_authority_data` is "" and `tls_server_name` is null.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    cluster_name: str
+    context_name: str
+    local_port: int
+    endpoint: str
+    tls_server_name: str | None
+    certificate_authority_data: str
+    client_certificate_data: str
+    client_key_data: str
+    content_b64: str
+    path: str | None = None
+
+
 class NodeOutput(BaseModel):
-    """Per-node success payload: handle->local_port plus any fetched files."""
+    """Per-node success payload: ports, fetched files, and kube targets."""
 
     model_config = ConfigDict(extra="forbid")
 
     ports: dict[str, int]
     fetch_files: dict[str, FetchedFile] = Field(default_factory=dict)
+    kube_targets: dict[str, KubeTargetOutput] = Field(default_factory=dict)
 
 
 class TunnelWarning(BaseModel):
@@ -316,6 +339,7 @@ class OutputSchema(BaseModel):
     connections: dict[str, NodeOutput]
     pid: int
     token: str
+    session_dir: str
     started_at: str
     warnings: list[TunnelWarning] = Field(default_factory=list)
 
