@@ -181,14 +181,61 @@ def prepared_files(garuda_tunnel_it_dir: Path) -> dict[str, Path]:
         os.chmod(no_perm, 0o600)
     no_perm.write_text("secret\n")
 
+    # Kube fixtures for kube_target integration tests (Phase 7).
+    # `kube_k3s` points at the fake apiserver with valid SAN.
+    # `kube_nosan` points at the SAN-less apiserver — exercises insecure_fallback.
+    kube_k3s = root / "kube_k3s"
+    kube_k3s.write_text(
+        "apiVersion: v1\n"
+        "kind: Config\n"
+        "clusters:\n"
+        "- name: default\n"
+        "  cluster:\n"
+        "    server: https://fake-apiserver:6443\n"
+        "    certificate-authority-data: Y2EtZGF0YQ==\n"
+        "contexts:\n"
+        "- name: default\n"
+        "  context: { cluster: default, user: default }\n"
+        "current-context: default\n"
+        "users:\n"
+        "- name: default\n"
+        "  user:\n"
+        "    client-certificate-data: Y2VydA==\n"
+        "    client-key-data: a2V5\n"
+    )
+
+    kube_nosan = root / "kube_nosan"
+    kube_nosan.write_text(
+        "apiVersion: v1\n"
+        "kind: Config\n"
+        "clusters:\n"
+        "- name: default\n"
+        "  cluster:\n"
+        "    server: https://fake-apiserver-nosan:6443\n"
+        "    certificate-authority-data: Y2EtZGF0YQ==\n"
+        "contexts:\n"
+        "- name: default\n"
+        "  context: { cluster: default, user: default }\n"
+        "current-context: default\n"
+        "users:\n"
+        "- name: default\n"
+        "  user:\n"
+        "    client-certificate-data: Y2VydA==\n"
+        "    client-key-data: a2V5\n"
+    )
+
     os.chmod(kubeconfig, 0o644)
     os.chmod(big, 0o644)
     os.chmod(no_perm, 0o000)
+    os.chmod(kube_k3s, 0o644)
+    os.chmod(kube_nosan, 0o644)
 
     return {
         "kubeconfig": kubeconfig,
         "big": big,
         "no_perm": no_perm,
+        "kube_k3s": kube_k3s,
+        "kube_nosan": kube_nosan,
     }
 
 

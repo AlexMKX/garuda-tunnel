@@ -39,12 +39,13 @@ def _state_dir() -> Path:
     return base / _STATE_SUBDIR
 
 
-def verify_token(pid: int, token: str) -> IdentityCheckResult:
+def verify_token(pid: int, token: str, state_dir: Path | None = None) -> IdentityCheckResult:
     """Return whether ``pid`` is alive and owns the identity lock for ``token``."""
     if not _process_exists(pid):
         return IdentityCheckResult.not_found
 
-    lock_path = _state_dir() / f"{token}.lock"
+    base = state_dir if state_dir is not None else _state_dir()
+    lock_path = base / f"{token}.lock"
     if not lock_path.is_file():
         return IdentityCheckResult.not_found
 

@@ -1,8 +1,9 @@
 # garuda-tunnel
 
-> Open N SSH local-forward tunnels and fetch small remote config files in a
-> single bootstrap. Built for disposable CI / operator environments that talk
-> to k3s or similar internal services without public ingress.
+> Open N SSH local-forward tunnels, fetch small remote config files, and
+> produce ready-to-use kubeconfigs — all in a single bootstrap. Built for
+> disposable CI / operator environments that talk to k3s or similar internal
+> services without public ingress.
 
 **Audience:** infrastructure engineers running short-lived jobs (CI, local
 containers, Terragrunt hooks) that need SSH-tunneled access plus a kubeconfig
@@ -19,6 +20,11 @@ nodes whose apiserver binds to `127.0.0.1` only.
   authentication and a second sshd session.
 - Ephemeral environments cannot rely on persistent SSH setup, agent
   forwarding, or pre-installed kubeconfigs.
+- Raw kubeconfigs from k3s point `server:` at the apiserver's own address
+  (often `127.0.0.1:6443`) and carry a TLS certificate whose SAN does not
+  include `127.0.0.1` — consumers previously had to rewrite `server:` and
+  also determine the correct `tls-server-name` themselves. `kube_targets`
+  handles both.
 
 ## Install
 
@@ -45,10 +51,13 @@ Requires Python >= 3.10. Linux and macOS supported; Windows works via WSL only.
 
 ## End-to-end example
 
+### Using `kube_targets` (recommended for k3s / Kubernetes)
+
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 
+SESSION_DIR=$(mktemp -d)
 PRIVATE_KEY=$(cat ~/.ssh/id_ed25519)
 
 JSON=$(cat <<EOF
@@ -58,11 +67,11 @@ JSON=$(cat <<EOF
       "host": "198.51.100.10",
       "user": "root",
       "ssh_pkey": $(jq -Rs . <<<"$PRIVATE_KEY"),
-      "remote_targets": {"kubeapi": "127.0.0.1:6443"},
-      "required": true,
-      "fetch_files": {
-        "kubeconfig": {"path": "/etc/rancher/k3s/k3s.yaml"}
-      }
+      "remote_targets": {},
+      "kube_targets": {
+        "k3s": {"kubeconfig_path": "/etc/rancher/k3s/k3s.yaml"}
+      },
+      "required": true
     }
   },
   "daemon": {
@@ -72,21 +81,19 @@ JSON=$(cat <<EOF
 EOF
 )
 
-RESULT=$(echo "$JSON" | garuda-tunnel start)
+RESULT=$(echo "$JSON" | garuda-tunnel start --session-dir "$SESSION_DIR")
 
-PID=$(jq -r '.pid' <<<"$RESULT")
-TOKEN=$(jq -r '.token' <<<"$RESULT")
-PORT=$(jq -r '.connections.edge1.ports.kubeapi' <<<"$RESULT")
-KUBECONFIG_B64=$(jq -r '.connections.edge1.fetch_files.kubeconfig.content_b64' <<<"$RESULT")
+PORT=$(jq -r '.connections.edge1.kube_targets.k3s.local_port' <<<"$RESULT")
+TLS_NAME=$(jq -r '.connections.edge1.kube_targets.k3s.tls_server_name' <<<"$RESULT")
+KUBECONFIG_B64=$(jq -r '.connections.edge1.kube_targets.k3s.content_b64' <<<"$RESULT")
 
 KUBECONFIG_FILE=$(mktemp)
 base64 -d <<<"$KUBECONFIG_B64" >"$KUBECONFIG_FILE"
-sed -i "s|server: https://127.0.0.1:6443|server: https://127.0.0.1:${PORT}|" \
-    "$KUBECONFIG_FILE"
+# server: and tls-server-name are already patched — no sed step needed
 
 kubectl --kubeconfig="$KUBECONFIG_FILE" get nodes
 
-garuda-tunnel stop --pid "$PID" --token "$TOKEN"
+garuda-tunnel stop --session-dir "$SESSION_DIR"
 rm -f "$KUBECONFIG_FILE"
 ```
 
@@ -95,6 +102,19 @@ itself down after 10 minutes with no client connections. Useful for
 ephemeral CI runs that may abort before reaching `garuda-tunnel stop`.
 Omit the field (or set to `null`) to keep the daemon alive until you call
 `stop` explicitly.
+
+### Using `fetch_files` (generic byte fetch)
+
+```bash
+RESULT=$(echo "$JSON" | garuda-tunnel start --session-dir "$SESSION_DIR")
+KUBECONFIG_B64=$(jq -r '.connections.edge1.fetch_files.kubeconfig.content_b64' <<<"$RESULT")
+KUBECONFIG_FILE=$(mktemp)
+base64 -d <<<"$KUBECONFIG_B64" >"$KUBECONFIG_FILE"
+# you must patch server: and determine tls-server-name yourself
+sed -i "s|server: https://127.0.0.1:6443|server: https://127.0.0.1:${PORT}|" \
+    "$KUBECONFIG_FILE"
+garuda-tunnel stop --session-dir "$SESSION_DIR"
+```
 
 ## Input reference (`InputSchema`)
 
@@ -106,6 +126,7 @@ Omit the field (or set to `null`) to keep the daemon alive until you call
 | `daemon.log_file` | `str \| null` | `null` | If set, daemon's stdout/stderr go here. Never contains fetched content. |
 | `daemon.shutdown_grace_seconds` | `int` | `10` | SIGTERM grace period before SIGKILL |
 | `daemon.auto_stop_idle_seconds` | `int \| null` | `null` | Seconds of idle (no active forward connections) before the daemon SIGTERMs itself. `null` disables. |
+| `daemon.materialize` | `bool` | `false` | Write patched kubeconfig files to `<session-dir>/tunnel-data/` (mode 0600). See [On-disk materialization](#on-disk-materialization). |
 
 **`NodeInput`** (per entry in `nodes`)
 
@@ -117,11 +138,12 @@ Omit the field (or set to `null`) to keep the daemon alive until you call
 | `ssh_pkey` | `str \| null` | `null` | PEM-encoded private key (in-memory, never written) |
 | `ssh_password` | `str \| null` | `null` | Password fallback. Either `ssh_pkey` or `ssh_password` must be set. |
 | `ssh_pkey_passphrase` | `str \| null` | `null` | Optional passphrase for `ssh_pkey` |
-| `remote_targets` | `dict[str, str]` | required | 1..16 entries; each value is `"host:port"`. Host is resolved on the SSH server side, enabling bastion-style cross-host forwards. |
+| `remote_targets` | `dict[str, str] \| null` | `null` | Up to 16 entries; each value is `"host:port"`. Host is resolved on the SSH server side, enabling bastion-style cross-host forwards. |
 | `ssh_options.compression` | `bool` | `false` | Enable SSH compression |
 | `ssh_options.connect_timeout` | `int` | `60` | Seconds |
 | `required` | `bool` | `true` | If false, this node may fail without aborting `start` |
 | `fetch_files` | `dict[str, FileSpec] \| null` | `null` | Files to read at start (max 16) |
+| `kube_targets` | `dict[str, KubeTarget] \| null` | `null` | Kubernetes clusters to access via the SSH tunnel (max 16). See [Kube mode](#kube-mode-kube_targets). |
 
 **`FileSpec`** (per entry in `fetch_files`)
 
@@ -131,11 +153,77 @@ Omit the field (or set to `null`) to keep the daemon alive until you call
 | `required` | `bool` | `true` | If false, fetch failure does not fail the node |
 
 Constraints:
-- `fetch_files` logical name: `^[a-zA-Z_][a-zA-Z0-9_-]*$`, 1..64 chars
-- `FileSpec.path`: starts with `/`, 1..4096 chars
+- `fetch_files` / `kube_targets` logical name: `^[a-zA-Z_][a-zA-Z0-9_-]*$`, 1..64 chars
+- `FileSpec.path` / `KubeTarget.kubeconfig_path`: starts with `/`, 1..4096 chars
 - Per-file size cap: 1 MiB (exceeded → `EFBIG`)
 - Host key verification: **not enforced** in this release. Use on trusted
   networks or with disposable hosts.
+
+## Kube mode (`kube_targets`)
+
+`kube_targets` is the high-level interface for k3s / Kubernetes access. For
+each entry the tool:
+
+1. Fetches the remote kubeconfig over SFTP (same 1 MiB cap as `fetch_files`).
+2. Reads the `current-context` and extracts the associated cluster + user.
+3. Resolves the `server:` host on the SSH-server side (split-horizon DNS
+   correct).
+4. Opens a local forward `127.0.0.1:<os-assigned>` → apiserver.
+5. Probes the apiserver's TLS certificate SAN to choose a `tls-server-name`.
+6. Rewrites `server:` to `https://127.0.0.1:<local_port>` and injects
+   `tls-server-name`. Other clusters in the file are byte-stable.
+7. Returns the patched kubeconfig plus already-extracted fields
+   (`endpoint`, `certificate_authority_data`, `client_certificate_data`,
+   `client_key_data`, `tls_server_name`).
+
+**One cluster per target.** The tool takes the `current-context` and ignores
+all other contexts/clusters in the file. To access two clusters, use two
+`kube_targets` entries. If the kubeconfig contains more than one context, a
+`warnings[]` entry names the ignored contexts.
+
+**`KubeTarget`** (per entry in `kube_targets`)
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `kubeconfig_path` | `str` | required | Absolute remote path to the kubeconfig file |
+| `tls_server_name` | `str \| null` | `null` | Explicit TLS server name hint. If set, overrides the SAN probe entirely. |
+| `insecure_fallback` | `bool` | `false` | See below. |
+| `required` | `bool` | `true` | If false, this target's failure does not fail the node. |
+
+**TLS server name selection.** When `tls_server_name` is not set, the tool
+probes the apiserver certificate SAN and selects in order:
+
+1. The original `server:` host, if it appears in the SAN.
+2. The first DNS-type SAN.
+3. The first IP-type SAN.
+
+If the selected name is not an exact match of the original `server:` host (a
+fallback fired), a `warnings[]` entry records the chosen SAN.
+
+**`insecure_fallback`.** When the SAN probe yields no usable name and no
+explicit `tls_server_name` is set:
+
+- `false` (default): the target fails (subject to `required`) with a clear
+  error. Fail-fast.
+- `true`: the patched kubeconfig carries `insecure-skip-tls-verify: true`,
+  `certificate-authority-data` is dropped, and a `warnings[]` entry records
+  that TLS verification was disabled for this target. Use only on disposable
+  hosts on trusted networks.
+
+**Kube target output fields** (under `connections[node].kube_targets[name]`):
+
+| Field | Description |
+|---|---|
+| `cluster_name` | Cluster name from the kubeconfig |
+| `context_name` | `current-context` value |
+| `local_port` | OS-assigned local forwarded port |
+| `endpoint` | `https://127.0.0.1:<local_port>` |
+| `tls_server_name` | Chosen TLS server name, or `null` on insecure fallback |
+| `certificate_authority_data` | Base64 CA cert, or `""` on insecure fallback |
+| `client_certificate_data` | Base64 client cert |
+| `client_key_data` | Base64 client private key |
+| `content_b64` | Full patched kubeconfig (always present) |
+| `path` | Absolute path to the materialized file, or `null` if `daemon.materialize=false` |
 
 ## Output reference
 
@@ -154,15 +242,32 @@ Constraints:
           "size": 2918,
           "sha256": "d2a0bf3c..."
         }
+      },
+      "kube_targets": {
+        "k3s": {
+          "cluster_name": "default",
+          "context_name": "default",
+          "local_port": 40124,
+          "endpoint": "https://127.0.0.1:40124",
+          "tls_server_name": "edge1.example.net",
+          "certificate_authority_data": "<b64>",
+          "client_certificate_data": "<b64>",
+          "client_key_data": "<b64>",
+          "content_b64": "YXBpVmVyc2lvbjogdjEK...",
+          "path": null
+        }
       }
     }
   },
   "pid": 12345,
   "token": "<opaque>",
-  "started_at": "2026-05-19T10:00:00Z",
+  "session_dir": "/tmp/garuda-session-abc123",
+  "started_at": "2026-05-30T10:00:00Z",
   "warnings": []
 }
 ```
+
+`session_dir` is **always** present. Pass it to `stop --session-dir`.
 
 **Failure (`ErrorOutput`)**
 
@@ -197,9 +302,6 @@ failure.
 
 ## Security notes
 
-- File content travels exactly once: from the daemon to the parent process
-  via an IPC pipe, then to the parent's stdout. The tool itself never writes
-  content to disk.
 - `daemon.log_file` (if set) receives only asyncssh/asyncio debug noise. No
   `print`/`log` call path in this codebase carries decoded file bytes.
 - `content_b64` is base64; callers must decode and protect it.
@@ -208,24 +310,50 @@ failure.
 - Private keys (`ssh_pkey`) stay in process memory; they are never written
   to `~/.ssh` or to a tempfile. Parsing happens via
   `asyncssh.import_private_key`.
-- This release does **not** verify remote host keys. Use only on trusted
-  networks or with disposable hosts. A pinning option is a future feature.
+
+**On-disk materialization** (`daemon.materialize`)
+
+By default (`materialize=false`) fetched content travels exactly once: from the
+daemon to the parent process via an IPC pipe, then to the parent's stdout. The
+tool itself never writes content to disk — the "content never to disk" guarantee
+is preserved.
+
+When `materialize=true`: the patched kubeconfig (including embedded private keys)
+is written mode 0600 to `<session-dir>/tunnel-data/<node>-<kube_target_name>`.
+The daemon removes these files on `stop` or `atexit`. The `path` field in the
+kube target output becomes non-null. Callers opting in accept that decoded files
+(including private keys) land on disk until `stop`/`atexit` runs. If the daemon
+is killed with `kill -9`, `tunnel-data/` is orphaned and must be cleaned up
+manually: `rm -rf <session-dir>/tunnel-data`.
+
+**Host-key verification — threat model**
+
+Remote host keys are **not** verified in this release. This is a deliberate
+choice re-affirmed for kube mode: the tool targets disposable/CI hosts on
+trusted networks where the SSH endpoint is established out-of-band by the
+caller (e.g. infrastructure outputs). In kube mode the SSH transport carries
+the kubeconfig (with private keys) and the SAN probe result; a MITM on an
+unverified connection could tamper with both. Operators on untrusted networks
+must not use kube mode until host-key pinning lands. Pinning is a tracked
+future feature.
 
 ## Troubleshooting
 
 | Symptom | Likely cause |
 |---|---|
 | `error: SchemaValidationError`, `details` mentions `require` | Old top-level `require` field. Use per-node `required: bool` instead. |
-| `error: SchemaValidationError`, `details` mentions `connections[...]` | Old output shape. `connections[node]` is now `{ports, fetch_files}`, not a list. |
+| `error: SchemaValidationError`, `details` mentions `connections[...]` | Old output shape. `connections[node]` is now `{ports, fetch_files, kube_targets}`, not a list. |
 | `error: SchemaValidationError`, `details` mentions `remote_ports` | The old `remote_ports: list[int]` field is gone. Use `remote_targets: {"handle": "host:port"}`. |
 | `fetch_files[name].error == "EFBIG"` | File exceeds 1 MiB. Wrong file, or this tool isn't the right transport. |
 | `fetch_files[name].error == "SSH_FX_PERMISSION_DENIED"` | The SSH user lacks read on the file. Check ACLs. |
+| `kube_targets[name]` missing or has error | Check `warnings[]` for SAN-probe details; try setting explicit `tls_server_name`. |
+| `start` with a supplied `--session-dir` fails with "tunnel-data already exists" | Orphaned `tunnel-data/` from a previous `kill -9`. Remove it: `rm -rf <session-dir>/tunnel-data`. |
 | `start` hangs | Node firewalled / DNS-stuck. Increase `ssh_options.connect_timeout` or remove the node. |
 | `status` says alive but `stop` says "token mismatch" | The PID was reused. Token guards against this — investigate which process holds the PID. |
 
 ## Migration from `v2026.10516.11702`
 
-Two breaking changes:
+Two breaking changes from the original release:
 
 **Output shape**
 
@@ -266,6 +394,35 @@ bastion-style forwards to other hosts in the SSH server's network.
 
 **Removed `ssh_options` fields:** `host_key_policy`, `known_hosts_path`, `threaded` (unused since the asyncssh migration; `extra=forbid` rejects them).
 
+## Migration from `v2026.51916.0` (fetch-files release)
+
+**`stop --pid --token` removed**
+
+The legacy `stop --pid <pid> --token <token>` interface is gone. The only stop
+interface is now `stop --session-dir <path>`.
+
+```diff
+- RESULT=$(echo "$JSON" | garuda-tunnel start)
+- PID=$(jq -r '.pid' <<<"$RESULT")
+- TOKEN=$(jq -r '.token' <<<"$RESULT")
+- garuda-tunnel stop --pid "$PID" --token "$TOKEN"
+
++ SESSION_DIR=$(mktemp -d)
++ RESULT=$(echo "$JSON" | garuda-tunnel start --session-dir "$SESSION_DIR")
++ garuda-tunnel stop --session-dir "$SESSION_DIR"
+```
+
+`--session-dir` is optional on `start` (a temporary dir is generated if
+omitted), but `session_dir` is **always** present in the output JSON. The
+simplest migration is to capture and reuse it:
+
+```bash
+RESULT=$(echo "$JSON" | garuda-tunnel start)
+SESSION_DIR=$(jq -r '.session_dir' <<<"$RESULT")
+# ... do work ...
+garuda-tunnel stop --session-dir "$SESSION_DIR"
+```
+
 ## Running tests
 
 Unit:
@@ -283,7 +440,8 @@ pytest tests/integration -m integration
 
 ## Project documents
 
-- Current design: `docs/specs/2026-05-20-feature-fetch-files-design.md`
+- Kube-targets design: `docs/specs/2026-05-30-kube-targets-design.md`
+- Fetch-files design: `docs/specs/2026-05-20-feature-fetch-files-design.md`
 - Original design (historical): `docs/specs/2026-05-16-garuda-tunnel-design.md`
 
 ## License

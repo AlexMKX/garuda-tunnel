@@ -62,6 +62,7 @@ def test_output_schema_round_trips() -> None:
         },
         pid=12345,
         token="abc",
+        session_dir="/tmp/x",
         started_at="2026-05-16T14:30:00Z",
         warnings=[TunnelWarning(node="b", error="auth failed")],
     )

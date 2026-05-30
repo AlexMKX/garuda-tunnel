@@ -10,6 +10,17 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 _FETCH_FILES_KEY_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]*$")
 
 
+def _validate_identifier_key(kind: str, name: str) -> None:
+    """Reject a dict key that is not a safe ≤64-char identifier.
+
+    Shared by fetch_files / kube_targets / nodes key validation.
+    """
+    if len(name) > 64:
+        raise ValueError(f"{kind} key {name!r}: max 64 chars")
+    if not _FETCH_FILES_KEY_RE.match(name):
+        raise ValueError(f"{kind} key {name!r}: must match ^[a-zA-Z_][a-zA-Z0-9_-]*$")
+
+
 def _parse_host_port(value: str) -> tuple[str, int]:
     """Parse 'host:port' or '[ipv6]:port' into (host, port).
 
@@ -73,6 +84,14 @@ class DaemonOptions(BaseModel):
             "Null (default) disables auto-shutdown."
         ),
     )
+    materialize: bool = Field(
+        default=False,
+        description=(
+            "If True, fetched/patched files (e.g. kube_targets kubeconfig) are "
+            "written mode 0600 into the session dir's tunnel-data/ and removed "
+            "on stop/atexit. Default False keeps content off disk."
+        ),
+    )
 
 
 class FileSpec(BaseModel):
@@ -96,6 +115,41 @@ class FileSpec(BaseModel):
             raise ValueError("path must be literal (no '~' expansion)")
         if not value.startswith("/"):
             raise ValueError("path must be absolute (start with '/')")
+        return value
+
+
+class KubeTarget(BaseModel):
+    """One kubeconfig to fetch, forward, SAN-probe, and patch.
+
+    Exactly one cluster is handled: the kubeconfig's current-context.
+    `tls_server_name` overrides the SAN probe entirely. `insecure_fallback`
+    governs what happens when no usable TLS name can be determined.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kubeconfig_path: str = Field(min_length=1, max_length=4096)
+    tls_server_name: str | None = None
+    insecure_fallback: bool = Field(
+        default=False,
+        description=(
+            "If the SAN probe yields no usable name and no tls_server_name is "
+            "given: True emits insecure-skip-tls-verify (drops CA) + a warning; "
+            "False fails the target (subject to `required`)."
+        ),
+    )
+    required: bool = Field(
+        default=True,
+        description="If False, this target's failure does not fail the node.",
+    )
+
+    @field_validator("kubeconfig_path")
+    @classmethod
+    def _validate_absolute(cls, value: str) -> str:
+        if value.startswith("~"):
+            raise ValueError("kubeconfig_path must be literal (no '~' expansion)")
+        if not value.startswith("/"):
+            raise ValueError("kubeconfig_path must be absolute (start with '/')")
         return value
 
 
@@ -130,6 +184,7 @@ class NodeInput(BaseModel):
         ),
     )
     fetch_files: dict[str, FileSpec] | None = None
+    kube_targets: dict[str, KubeTarget] | None = None
 
     @field_validator("remote_targets", mode="before")
     @classmethod
@@ -178,10 +233,22 @@ class NodeInput(BaseModel):
         if len(value) > 16:
             raise ValueError("fetch_files: at most 16 entries per node")
         for name in value:
-            if len(name) > 64:
-                raise ValueError(f"fetch_files key {name!r}: max 64 chars")
-            if not _FETCH_FILES_KEY_RE.match(name):
-                raise ValueError(f"fetch_files key {name!r}: must match ^[a-zA-Z_][a-zA-Z0-9_-]*$")
+            _validate_identifier_key("fetch_files", name)
+        return value
+
+    @field_validator("kube_targets")
+    @classmethod
+    def _validate_kube_targets(
+        cls, value: dict[str, KubeTarget] | None
+    ) -> dict[str, KubeTarget] | None:
+        if value is None:
+            return None
+        if len(value) == 0:
+            raise ValueError("kube_targets: omit field instead of empty dict")
+        if len(value) > 16:
+            raise ValueError("kube_targets: at most 16 entries per node")
+        for name in value:
+            _validate_identifier_key("kube_targets", name)
         return value
 
 
@@ -197,6 +264,7 @@ class InputSchema(BaseModel):
     @classmethod
     def _validate_auth(cls, value: dict[str, NodeInput]) -> dict[str, NodeInput]:
         for name, node in value.items():
+            _validate_identifier_key("node", name)
             if not node.ssh_pkey and not node.ssh_password:
                 raise ValueError(f"node {name!r}: must provide ssh_pkey or ssh_password")
         return value
@@ -227,13 +295,36 @@ class FetchedFile(BaseModel):
         return self
 
 
+class KubeTargetOutput(BaseModel):
+    """Extracted, ready-to-use fields for one kube_target's current-context cluster.
+
+    `content_b64` is the full patched kubeconfig. `path` is set only when
+    daemon.materialize is True. On insecure fallback,
+    `certificate_authority_data` is "" and `tls_server_name` is null.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    cluster_name: str
+    context_name: str
+    local_port: int
+    endpoint: str
+    tls_server_name: str | None
+    certificate_authority_data: str
+    client_certificate_data: str
+    client_key_data: str
+    content_b64: str
+    path: str | None = None
+
+
 class NodeOutput(BaseModel):
-    """Per-node success payload: handle->local_port plus any fetched files."""
+    """Per-node success payload: ports, fetched files, and kube targets."""
 
     model_config = ConfigDict(extra="forbid")
 
     ports: dict[str, int]
     fetch_files: dict[str, FetchedFile] = Field(default_factory=dict)
+    kube_targets: dict[str, KubeTargetOutput] = Field(default_factory=dict)
 
 
 class TunnelWarning(BaseModel):
@@ -254,6 +345,7 @@ class OutputSchema(BaseModel):
     connections: dict[str, NodeOutput]
     pid: int
     token: str
+    session_dir: str
     started_at: str
     warnings: list[TunnelWarning] = Field(default_factory=list)
 

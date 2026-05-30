@@ -46,9 +46,14 @@ class DaemonError(GarudaTunnelError):
     """Generic daemon-side failure surfaced via the IPC handshake."""
 
 
+class KubeParseError(GarudaTunnelError):
+    """A kubeconfig could not be parsed or lacked a usable current-context."""
+
+
 _EXIT_CODES: dict[type[GarudaTunnelError], int] = {
     SchemaValidationError: 1,
     RequiredTunnelFailure: 2,
+    KubeParseError: 2,
     DaemonError: 4,
 }
 

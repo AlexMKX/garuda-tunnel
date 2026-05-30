@@ -55,11 +55,13 @@ services:
       - PASSWORD_ACCESS=false
     volumes:
       - ./_keys:/keys:ro
+      - /tmp/garuda-tunnel-it:/srv/files:ro
       - ./_bastion_sshd_config:/config/sshd/sshd_config.d:ro
     ports:
       - "127.0.0.1::2222"
     networks:
       - internal
+      - default
 
   http-target-1:
     image: python:3.12-alpine
@@ -110,6 +112,81 @@ services:
       internal:
         aliases:
           - target-2
+
+  fake-apiserver:
+    image: python:3.12-alpine
+    command:
+      - sh
+      - -c
+      - |
+        apk add --no-cache openssl >/dev/null 2>&1 &&
+        openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+          -subj '/CN=dev-kube-1' \
+          -addext 'subjectAltName=DNS:dev-kube-1,IP:127.0.0.1' \
+          -keyout /tmp/k.pem -out /tmp/c.pem >/dev/null 2>&1 &&
+        python3 -c "
+        import ssl, socket, threading
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain('/tmp/c.pem', '/tmp/k.pem')
+        def handle(c, a):
+            try:
+                t = ctx.wrap_socket(c, server_side=True)
+                t.close()
+            except: pass
+            try: c.close()
+            except: pass
+        s = socket.socket()
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(('0.0.0.0', 6443))
+        s.listen(100)
+        while True:
+            c, a = s.accept()
+            threading.Thread(target=handle, args=(c, a), daemon=True).start()
+        "
+    networks:
+      internal:
+        aliases:
+          - fake-apiserver
+      default:
+        aliases:
+          - fake-apiserver
+
+  fake-apiserver-nosan:
+    image: python:3.12-alpine
+    command:
+      - sh
+      - -c
+      - |
+        apk add --no-cache openssl >/dev/null 2>&1 &&
+        openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+          -subj '/CN=nosan' \
+          -keyout /tmp/k.pem -out /tmp/c.pem >/dev/null 2>&1 &&
+        python3 -c "
+        import ssl, socket, threading
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain('/tmp/c.pem', '/tmp/k.pem')
+        def handle(c, a):
+            try:
+                t = ctx.wrap_socket(c, server_side=True)
+                t.close()
+            except: pass
+            try: c.close()
+            except: pass
+        s = socket.socket()
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(('0.0.0.0', 6443))
+        s.listen(100)
+        while True:
+            c, a = s.accept()
+            threading.Thread(target=handle, args=(c, a), daemon=True).start()
+        "
+    networks:
+      internal:
+        aliases:
+          - fake-apiserver-nosan
+      default:
+        aliases:
+          - fake-apiserver-nosan
 
 networks:
   internal:

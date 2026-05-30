@@ -61,7 +61,7 @@ def _open_log_target(path: str | None) -> int | IO[bytes]:
     return open(path, "ab", buffering=0)  # noqa: SIM115  # closed by caller
 
 
-def spawn_daemon(schema: InputSchema) -> dict[str, Any]:
+def spawn_daemon(schema: InputSchema, session_dir: str | None = None) -> dict[str, Any]:
     """Spawn the worker, send the schema, read the IPC response, return it.
 
     Returns the structured IPC message for any of the three worker outcomes:
@@ -84,6 +84,7 @@ def spawn_daemon(schema: InputSchema) -> dict[str, Any]:
                 "garuda_tunnel._worker",
                 f"--ipc-fd={ipc_write_fd}",
                 f"--token={runtime_token}",
+                *([f"--session-dir={session_dir}"] if session_dir is not None else []),
             ],
             stdin=subprocess.PIPE,
             stdout=log_target,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -11,14 +12,17 @@ import asyncssh
 from garuda_tunnel.activity import ActivityTracker
 from garuda_tunnel.exceptions import RequiredTunnelFailure, TunnelStartupError
 from garuda_tunnel.fetcher import fetch_files
+from garuda_tunnel.kube import default_san_probe, run_kube_targets
 from garuda_tunnel.schemas import (
     ErrorOutput,
     FetchedFile,
     InputSchema,
+    KubeTargetOutput,
     NodeOutput,
     OutputSchema,
     TunnelWarning,
 )
+from garuda_tunnel.session import SessionDir
 from garuda_tunnel.ssh import close_transport, open_connection, open_local_forwards
 
 # Errors we expect from a remote SSH peer, local sshd handshake, or
@@ -44,14 +48,17 @@ class _NodeRuntime:
     conn: asyncssh.SSHClientConnection | None = None
     listeners: list[asyncssh.SSHListener] = field(default_factory=list)
     error: str | None = None
+    kube_targets: dict[str, KubeTargetOutput] = field(default_factory=dict)
+    kube_warnings: list[TunnelWarning] = field(default_factory=list)
 
 
 class TunnelManager:
     """Orchestrate asyncssh transports + fetch_files for an InputSchema."""
 
-    def __init__(self, schema: InputSchema) -> None:
-        """Store the parsed input schema; do not open any transport yet."""
+    def __init__(self, schema: InputSchema, session: SessionDir | None = None) -> None:
+        """Store the parsed input schema and optional SessionDir for materialize."""
         self._schema = schema
+        self._session = session
         self._runtimes: list[_NodeRuntime] = []
         self.activity_tracker = ActivityTracker()
 
@@ -67,6 +74,7 @@ class TunnelManager:
         *,
         pid: int,
         token: str,
+        session_dir: str,
     ) -> OutputSchema | ErrorOutput:
         """Open every node concurrently; build OutputSchema or ErrorOutput."""
         results = await self._start_all()
@@ -93,6 +101,7 @@ class TunnelManager:
             r.name: NodeOutput(
                 ports=r.ports,
                 fetch_files=r.fetched_files,
+                kube_targets=r.kube_targets,
             )
             for r in results
             if r.success
@@ -102,10 +111,14 @@ class TunnelManager:
             for r in results
             if not r.success and not self._schema.nodes[r.name].required
         ]
+        for r in results:
+            if r.success:
+                warnings.extend(r.kube_warnings)
         return OutputSchema(
             connections=connections,
             pid=pid,
             token=token,
+            session_dir=session_dir,
             started_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             warnings=warnings,
         )
@@ -150,6 +163,36 @@ class TunnelManager:
             runtime.fetched_files = fetched
             if required_failures:
                 runtime.error = f"required fetch_files failed: {required_failures}"
+                await close_transport(runtime.conn, runtime.listeners)
+                runtime.conn = None
+                runtime.listeners = []
+                return runtime
+
+        if node.kube_targets:
+            try:
+                kube_out, kube_required, kube_warn = await run_kube_targets(
+                    runtime.conn,
+                    node.kube_targets,
+                    connect_timeout=node.ssh_options.connect_timeout,
+                    probe=default_san_probe,
+                    node_name=name,
+                )
+            except _NODE_STARTUP_ERRORS as exc:
+                runtime.error = str(exc)
+                await close_transport(runtime.conn, runtime.listeners)
+                runtime.conn = None
+                runtime.listeners = []
+                return runtime
+            runtime.kube_targets = kube_out
+            runtime.kube_warnings = kube_warn
+            if self._session is not None:
+                for kname, kout in kube_out.items():
+                    path = self._session.materialize(
+                        f"{name}-{kname}", base64.b64decode(kout.content_b64)
+                    )
+                    runtime.kube_targets[kname] = kout.model_copy(update={"path": path})
+            if kube_required:
+                runtime.error = f"required kube_targets failed: {kube_required}"
                 await close_transport(runtime.conn, runtime.listeners)
                 runtime.conn = None
                 runtime.listeners = []
