@@ -16,15 +16,16 @@ import json
 import os
 import signal
 import sys
+from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
 
 from garuda_tunnel.activity import ActivityTracker
 from garuda_tunnel.exceptions import DaemonError
-from garuda_tunnel.identity import _state_dir
 from garuda_tunnel.manager import TunnelManager
 from garuda_tunnel.schemas import ErrorOutput, InputSchema, OutputSchema
+from garuda_tunnel.session import SessionDir
 
 _SCHEMA_MAX_BYTES = 8 * 1024 * 1024  # 8 MiB is more than enough for any sane input
 
@@ -33,18 +34,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="garuda_tunnel._worker", add_help=False)
     parser.add_argument("--ipc-fd", type=int, required=True)
     parser.add_argument("--token", required=True)
+    parser.add_argument("--session-dir", default=None)
     return parser.parse_args(argv)
 
 
-def _acquire_identity_lock(token: str) -> int:
-    """Create + flock the per-token lockfile; return the open fd.
+def _acquire_identity_lock(token: str, state_dir: Path) -> int:
+    """Create + flock the per-token lockfile in state_dir; return the open fd.
 
     The fd must stay open for the worker's lifetime. The kernel releases the
     flock automatically when the process exits, clean or not.
     """
-    state = _state_dir()
-    state.mkdir(parents=True, exist_ok=True, mode=0o700)
-    lock_path = state / f"{token}.lock"
+    state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    lock_path = state_dir / f"{token}.lock"
     fd = os.open(lock_path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -59,10 +60,10 @@ def _acquire_identity_lock(token: str) -> int:
     return fd
 
 
-def _release_identity_lock(lock_fd: int, token: str) -> None:
-    """Unlink the lockfile and close the fd. Best-effort; never raises."""
+def _release_identity_lock(lock_fd: int, token: str, state_dir: Path) -> None:
+    """Unlink the lockfile from state_dir and close the fd. Best-effort; never raises."""
     try:
-        (_state_dir() / f"{token}.lock").unlink()
+        (state_dir / f"{token}.lock").unlink()
     except OSError:
         pass
     try:
@@ -122,7 +123,8 @@ def _report_pre_run_failure(ipc_fd: int, exc: BaseException) -> None:
         pass
 
 
-async def _run(args: argparse.Namespace, lock_fd: int) -> int:
+async def _run(args: argparse.Namespace, lock_fd: int, session: SessionDir) -> int:
+    data_dir = Path(session.session_dir) / "tunnel-data"
     try:
         schema = _read_schema_from_stdin()
     except (DaemonError, ValidationError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -131,13 +133,16 @@ async def _run(args: argparse.Namespace, lock_fd: int) -> int:
             os.close(args.ipc_fd)
         except OSError:
             pass
-        _release_identity_lock(lock_fd, args.token)
+        _release_identity_lock(lock_fd, args.token, data_dir)
+        session.cleanup()
         return 4
 
-    manager = TunnelManager(schema)
+    manager = TunnelManager(schema, session=session if schema.daemon.materialize else None)
 
     try:
-        result = await manager.start_all_and_build_output(pid=os.getpid(), token=args.token)
+        result = await manager.start_all_and_build_output(
+            pid=os.getpid(), token=args.token, session_dir=session.session_dir
+        )
     except Exception as exc:  # noqa: BLE001  # pylint: disable=broad-exception-caught
         # Worker top-level guard: any uncaught failure here must reach the
         # parent as a `daemon_error` IPC frame, otherwise the parent blocks
@@ -148,7 +153,8 @@ async def _run(args: argparse.Namespace, lock_fd: int) -> int:
             os.close(args.ipc_fd)
         except OSError:
             pass
-        _release_identity_lock(lock_fd, args.token)
+        _release_identity_lock(lock_fd, args.token, data_dir)
+        session.cleanup()
         return 4
 
     if isinstance(result, ErrorOutput):
@@ -158,7 +164,8 @@ async def _run(args: argparse.Namespace, lock_fd: int) -> int:
             {"kind": "required_failure", "payload": result.model_dump(mode="json")},
         )
         os.close(args.ipc_fd)
-        _release_identity_lock(lock_fd, args.token)
+        _release_identity_lock(lock_fd, args.token, data_dir)
+        session.cleanup()
         return 2
 
     assert isinstance(result, OutputSchema)
@@ -193,22 +200,23 @@ async def _run(args: argparse.Namespace, lock_fd: int) -> int:
             except asyncio.CancelledError:
                 pass
         await manager.stop_all()
-        _release_identity_lock(lock_fd, args.token)
+        _release_identity_lock(lock_fd, args.token, data_dir)
+        session.cleanup()
     return 0
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Worker entry point: parse args, acquire identity lock, run asyncio loop, exit hard."""
+    """Worker entry: create session dir, lock identity, run loop, clean up, exit."""
     args = _parse_args(argv)
     try:
-        lock_fd = _acquire_identity_lock(args.token)
+        session = SessionDir.create(supplied=args.session_dir)
+        data_dir = Path(session.session_dir) / "tunnel-data"
+        lock_fd = _acquire_identity_lock(args.token, data_dir)
+        session.write_identity(pid=os.getpid(), token=args.token)
     except Exception as exc:  # noqa: BLE001  # pylint: disable=broad-exception-caught
-        # Lock acquisition runs BEFORE asyncio.run; the worker top-level guard
-        # inside _run cannot catch failures here. Report via IPC so the parent
-        # does not block on an empty pipe.
         _report_pre_run_failure(args.ipc_fd, exc)
         os._exit(4)
-    rc = asyncio.run(_run(args, lock_fd))
+    rc = asyncio.run(_run(args, lock_fd, session))
     os._exit(rc)
 
 

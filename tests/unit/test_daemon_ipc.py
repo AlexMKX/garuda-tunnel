@@ -9,9 +9,12 @@ Code: garuda_tunnel/daemon.py
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import sys
+import tempfile
 import time
+from pathlib import Path
 
 import pytest
 
@@ -48,25 +51,30 @@ def _make_empty_schema() -> InputSchema:
 def test_spawn_daemon_returns_worker_pid_and_token_via_ipc() -> None:
     """Worker pid and token are delivered over the IPC pipe and process is alive."""
     schema = _make_empty_schema()
-    message = spawn_daemon(schema)
-    payload = message["payload"]
-    pid = int(payload["pid"])
-    token = str(payload["token"])
+    session_root = tempfile.mkdtemp(prefix="gt-test-")
     try:
-        assert _process_alive(pid), "worker process should be alive after IPC handshake"
-        assert pid != os.getpid()
-        assert token  # opaque non-empty token
-        # The worker process must hold the identity lockfile so that
-        # `stop --pid --token` can verify identity. Exercise this via the
-        # public identity API, which checks for an exclusive flock on
-        # ~/.local/state/garuda-tunnel/<token>.lock.
-        if sys.platform not in {"linux", "darwin"}:
-            pytest.skip("token identity check only validated on Linux and macOS")
-        assert verify_token(pid, token) == IdentityCheckResult.match
+        message = spawn_daemon(schema, session_dir=session_root)
+        payload = message["payload"]
+        pid = int(payload["pid"])
+        token = str(payload["token"])
+        try:
+            assert _process_alive(pid), "worker process should be alive after IPC handshake"
+            assert pid != os.getpid()
+            assert token  # opaque non-empty token
+            # The worker process must hold the identity lockfile so that
+            # `stop --pid --token` can verify identity. Exercise this via the
+            # public identity API, which checks for an exclusive flock on
+            # <session_dir>/tunnel-data/<token>.lock.
+            if sys.platform not in {"linux", "darwin"}:
+                pytest.skip("token identity check only validated on Linux and macOS")
+            data_dir = Path(payload["session_dir"]) / "tunnel-data"
+            assert verify_token(pid, token, state_dir=data_dir) == IdentityCheckResult.match
+        finally:
+            if _process_alive(pid):
+                os.kill(pid, signal.SIGTERM)
+                _wait_until_dead(pid)
     finally:
-        if _process_alive(pid):
-            os.kill(pid, signal.SIGTERM)
-            _wait_until_dead(pid)
+        shutil.rmtree(session_root, ignore_errors=True)
 
 
 def test_spawn_daemon_propagates_required_failure() -> None:
@@ -85,10 +93,14 @@ def test_spawn_daemon_propagates_required_failure() -> None:
             }
         }
     )
-    message = spawn_daemon(schema)
-    assert message["kind"] == "required_failure"
-    payload = message["payload"]
-    assert payload["error"] == "RequiredTunnelFailure"
+    session_root = tempfile.mkdtemp(prefix="gt-test-")
+    try:
+        message = spawn_daemon(schema, session_dir=session_root)
+        assert message["kind"] == "required_failure"
+        payload = message["payload"]
+        assert payload["error"] == "RequiredTunnelFailure"
+    finally:
+        shutil.rmtree(session_root, ignore_errors=True)
 
 
 def test_spawn_daemon_with_leading_dash_token(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -104,14 +116,18 @@ def test_spawn_daemon_with_leading_dash_token(monkeypatch: pytest.MonkeyPatch) -
         lambda _nbytes: "-leading-dash-token-AbCdEf",
     )
     schema = _make_empty_schema()
-    message = spawn_daemon(schema)
-    assert message["kind"] == "success"
-    payload = message["payload"]
-    pid = int(payload["pid"])
+    session_root = tempfile.mkdtemp(prefix="gt-test-")
     try:
-        assert _process_alive(pid)
-        assert payload["token"] == "-leading-dash-token-AbCdEf"
+        message = spawn_daemon(schema, session_dir=session_root)
+        assert message["kind"] == "success"
+        payload = message["payload"]
+        pid = int(payload["pid"])
+        try:
+            assert _process_alive(pid)
+            assert payload["token"] == "-leading-dash-token-AbCdEf"
+        finally:
+            if _process_alive(pid):
+                os.kill(pid, signal.SIGTERM)
+                _wait_until_dead(pid)
     finally:
-        if _process_alive(pid):
-            os.kill(pid, signal.SIGTERM)
-            _wait_until_dead(pid)
+        shutil.rmtree(session_root, ignore_errors=True)

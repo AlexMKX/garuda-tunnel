@@ -184,6 +184,7 @@ class TestNodeOutputShape:
             connections={"edge1": NodeOutput(ports={"kubeapi": 54321})},
             pid=123,
             token="t",
+            session_dir="/tmp/x",
             started_at="2026-05-20T00:00:00Z",
         )
         dumped = original.model_dump()

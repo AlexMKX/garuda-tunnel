@@ -70,6 +70,7 @@ def test_output_schema_round_trip_with_fetch_files() -> None:
         },
         pid=1,
         token="t",
+        session_dir="/tmp/x",
         started_at="2026-05-19T10:00:00Z",
         warnings=[TunnelWarning(node="b", error="x")],
     )

@@ -77,7 +77,7 @@ async def test_no_fetch_files_skips_fetcher(monkeypatch: pytest.MonkeyPatch) -> 
     _patch_transport(monkeypatch, _FakeConn())
 
     mgr = TunnelManager(_input(fetch=None))
-    out = await mgr.start_all_and_build_output(pid=1, token="t")
+    out = await mgr.start_all_and_build_output(pid=1, token="t", session_dir="/tmp/x")
     assert isinstance(out, OutputSchema)
     assert called == []
     assert out.connections["a"].fetch_files == {}
@@ -97,7 +97,7 @@ async def test_fetch_files_results_populate_node_output(
     _patch_transport(monkeypatch, _FakeConn())
 
     mgr = TunnelManager(_input(fetch={"kubeconfig": FileSpec(path="/k")}))
-    out = await mgr.start_all_and_build_output(pid=1, token="t")
+    out = await mgr.start_all_and_build_output(pid=1, token="t", session_dir="/tmp/x")
     assert isinstance(out, OutputSchema)
     assert out.connections["a"].fetch_files == fake_result
 
@@ -114,7 +114,7 @@ async def test_required_file_failure_aborts(monkeypatch: pytest.MonkeyPatch) -> 
     _patch_transport(monkeypatch, fake_conn)
 
     mgr = TunnelManager(_input(fetch={"k": FileSpec(path="/x")}))
-    out = await mgr.start_all_and_build_output(pid=1, token="t")
+    out = await mgr.start_all_and_build_output(pid=1, token="t", session_dir="/tmp/x")
     assert isinstance(out, ErrorOutput)
     assert fake_conn.closed is True
 
@@ -130,7 +130,7 @@ async def test_soft_fail_file_keeps_node_success(monkeypatch: pytest.MonkeyPatch
     _patch_transport(monkeypatch, _FakeConn())
 
     mgr = TunnelManager(_input(fetch={"k": FileSpec(path="/x", required=False)}))
-    out = await mgr.start_all_and_build_output(pid=1, token="t")
+    out = await mgr.start_all_and_build_output(pid=1, token="t", session_dir="/tmp/x")
     assert isinstance(out, OutputSchema)
     assert isinstance(out.connections["a"], NodeOutput)
     assert out.connections["a"].fetch_files["k"].error == "SSH_FX_NO_SUCH_FILE"
@@ -160,7 +160,7 @@ async def test_fetch_skipped_when_forward_fails(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(manager_mod, "open_local_forwards", boom)
 
     mgr = TunnelManager(_input(fetch={"k": FileSpec(path="/x")}))
-    out = await mgr.start_all_and_build_output(pid=1, token="t")
+    out = await mgr.start_all_and_build_output(pid=1, token="t", session_dir="/tmp/x")
     assert isinstance(out, ErrorOutput)
     assert fetch_called == []
     assert fake_conn.closed is True
@@ -180,7 +180,7 @@ async def test_fetch_transport_failure_stops_forwarder_and_aborts(
     _patch_transport(monkeypatch, fake_conn)
 
     mgr = TunnelManager(_input(fetch={"k": FileSpec(path="/x")}))
-    out = await mgr.start_all_and_build_output(pid=1, token="t")
+    out = await mgr.start_all_and_build_output(pid=1, token="t", session_dir="/tmp/x")
     assert isinstance(out, ErrorOutput)
     assert "peer closed mid-fetch" in out.message + str(out.details)
     assert fake_conn.closed is True
