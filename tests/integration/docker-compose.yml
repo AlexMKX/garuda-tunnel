@@ -111,6 +111,24 @@ services:
         aliases:
           - target-2
 
+  fake-apiserver:
+    image: alpine:3.20
+    command: |
+      sh -c "apk add --no-cache openssl >/dev/null 2>&1 &&
+      openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=dev-kube-1' -addext 'subjectAltName=DNS:dev-kube-1,IP:127.0.0.1' -keyout /tmp/k.pem -out /tmp/c.pem >/dev/null 2>&1 &&
+      while true; do openssl s_server -accept 6443 -cert /tmp/c.pem -key /tmp/k.pem -quiet; done"
+    networks:
+      - default
+
+  fake-apiserver-nosan:
+    image: alpine:3.20
+    command: |
+      sh -c "apk add --no-cache openssl >/dev/null 2>&1 &&
+      openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=nosan' -keyout /tmp/k.pem -out /tmp/c.pem >/dev/null 2>&1 &&
+      while true; do openssl s_server -accept 6443 -cert /tmp/c.pem -key /tmp/k.pem -quiet; done"
+    networks:
+      - default
+
 networks:
   internal:
     driver: bridge
