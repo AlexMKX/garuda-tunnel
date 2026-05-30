@@ -92,3 +92,16 @@ def test_write_file_rejects_slash_name(tmp_path: Path) -> None:
     sd = SessionDir.create(supplied=None, base=tmp_path)
     with pytest.raises(SessionError):
         sd.materialize("sub/dir", b"x")
+
+
+def test_rejects_relative_supplied_dir(tmp_path: Path) -> None:
+    """A relative --session-dir is rejected before resolution."""
+    with pytest.raises(SessionError):
+        SessionDir.create(supplied="relative-session", base=tmp_path)
+
+
+def test_accepts_absolute_supplied_dir(tmp_path: Path) -> None:
+    """An absolute --session-dir is accepted (regression guard)."""
+    abs_dir = tmp_path / "work"
+    sd = SessionDir.create(supplied=str(abs_dir), base=tmp_path)
+    assert Path(sd.session_dir) == abs_dir.resolve()

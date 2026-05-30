@@ -40,9 +40,10 @@ class SessionDir:
             root = Path(tempfile.mkdtemp(prefix="garuda-tunnel-", dir=parent))
             generated = True
         else:
-            root = Path(supplied).resolve()
-            if not root.is_absolute():
-                raise SessionError("session dir must be absolute")
+            supplied_path = Path(supplied)
+            if not supplied_path.is_absolute():
+                raise SessionError("session dir must be an absolute path")
+            root = supplied_path.resolve()
             root.mkdir(parents=True, exist_ok=True)
             generated = False
 
