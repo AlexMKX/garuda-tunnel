@@ -167,11 +167,11 @@ def choose_tls_server_name(
 ) -> tuple[str | None, bool]:
     """Choose a tls-server-name; return (name, fellback).
 
-    Preference: original host if present in SAN; else first DNS SAN; else
-    first IP SAN; else None. `fellback` is True whenever the chosen name is
-    not an exact match of `original_host` (including the None case).
+    Preference: original host if present in SAN (DNS or IP); else first DNS
+    SAN; else first IP SAN; else None. `fellback` is True whenever the chosen
+    name is not an exact match of `original_host` (including the None case).
     """
-    if original_host in dns_sans:
+    if original_host in dns_sans or original_host in ip_sans:
         return original_host, False
     if dns_sans:
         return dns_sans[0], True

@@ -44,16 +44,25 @@ def test_falls_back_to_first_ip_san() -> None:
     name, fellback = choose_tls_server_name(
         original_host="127.0.0.1",
         dns_sans=[],
-        ip_sans=["10.0.0.40", "127.0.0.1"],
+        ip_sans=["10.0.0.40", "10.0.0.50"],
     )
     assert name == "10.0.0.40"
     assert fellback is True
 
 
+def test_prefers_original_host_when_in_ip_san() -> None:
+    """Original host matches an IP SAN entry → chosen, no fallback (mirrors DNS case)."""
+    name, fellback = choose_tls_server_name(
+        original_host="10.0.0.40",
+        dns_sans=["kubernetes"],
+        ip_sans=["10.0.0.40", "127.0.0.1"],
+    )
+    assert name == "10.0.0.40"
+    assert fellback is False
+
+
 def test_empty_san_returns_none() -> None:
     """An empty SAN list returns None (caller decides insecure/fail)."""
-    name, fellback = choose_tls_server_name(
-        original_host="127.0.0.1", dns_sans=[], ip_sans=[]
-    )
+    name, fellback = choose_tls_server_name(original_host="127.0.0.1", dns_sans=[], ip_sans=[])
     assert name is None
     assert fellback is True
