@@ -7,6 +7,7 @@ import os
 import signal
 import sys
 import time
+from pathlib import Path
 
 import click
 from pydantic import ValidationError
@@ -21,6 +22,7 @@ from garuda_tunnel.exceptions import (
 )
 from garuda_tunnel.identity import IdentityCheckResult, verify_token
 from garuda_tunnel.schemas import InputSchema
+from garuda_tunnel.session import SessionDir, SessionError
 
 
 class _UsageExit64(click.Group):
@@ -49,7 +51,8 @@ def main() -> None:
 
 
 @main.command("start")
-def start_command() -> None:
+@click.option("--session-dir", "session_dir", default=None)
+def start_command(session_dir: str | None) -> None:
     """Read JSON from stdin, open tunnels, daemonize, print mapping JSON."""
     try:
         raw = sys.stdin.read()
@@ -67,7 +70,7 @@ def start_command() -> None:
                 "input does not satisfy the InputSchema contract",
                 {"errors": json.loads(exc.json())},
             ) from exc
-        message = spawn_daemon(schema)
+        message = spawn_daemon(schema, session_dir=session_dir)
         sys.stdout.write(json.dumps(message["payload"]))
         sys.stdout.write("\n")
         sys.stdout.flush()
@@ -99,27 +102,37 @@ def start_command() -> None:
 
 
 @main.command("stop")
-@click.option("--pid", type=int, required=True)
-@click.option("--token", type=str, required=True)
+@click.option("--session-dir", "session_dir", required=True)
 @click.option("--grace-seconds", type=int, default=10, show_default=True)
-def stop_command(pid: int, token: str, grace_seconds: int) -> None:
-    """Send SIGTERM (then SIGKILL) to a garuda-tunnel daemon identified by PID+token."""
-    if not _kill_with_identity(pid, token, grace_seconds, force=True):
+def stop_command(session_dir: str, grace_seconds: int) -> None:
+    """Stop the daemon recorded under <session-dir>/tunnel-data and clean it up."""
+    try:
+        pid, token = SessionDir.read_identity(session_dir)
+    except SessionError as exc:
+        sys.stdout.write(json.dumps({"stopped": False, "reason": str(exc)}))
+        sys.stdout.write("\n")
+        sys.stdout.flush()
         sys.exit(0)
+        return
+    data_dir = Path(session_dir).resolve() / "tunnel-data"
+    _kill_with_identity(pid, token, grace_seconds, force=True, state_dir=data_dir)
+    SessionDir.cleanup_path(session_dir)
 
 
 @main.command("status")
 @click.option("--pid", type=int, required=True)
 @click.option("--token", type=str, default=None)
-def status_command(pid: int, token: str | None) -> None:
-    """Report whether the daemon with the given PID (and optional token) is alive."""
-    alive = _is_alive(pid, token)
+@click.option("--session-dir", "session_dir", default=None)
+def status_command(pid: int, token: str | None, session_dir: str | None) -> None:
+    """Report whether the daemon with the given PID is alive."""
+    state_dir = (Path(session_dir).resolve() / "tunnel-data") if session_dir else None
+    alive = _is_alive(pid, token, state_dir=state_dir)
     sys.stdout.write(json.dumps({"alive": alive}))
     sys.stdout.write("\n")
     sys.stdout.flush()
 
 
-def _is_alive(pid: int, token: str | None) -> bool:
+def _is_alive(pid: int, token: str | None, state_dir: Path | None = None) -> bool:
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -130,13 +143,13 @@ def _is_alive(pid: int, token: str | None) -> bool:
         # Fall through to verify_token; it owns the with-token answer.
     if token is None:
         return True
-    return verify_token(pid, token) == IdentityCheckResult.match
+    return verify_token(pid, token, state_dir=state_dir) == IdentityCheckResult.match
 
 
 def _kill_with_identity(  # pylint: disable=too-many-return-statements  # reason: each identity-check outcome maps to a distinct early return
-    pid: int, token: str, grace_seconds: int, *, force: bool
+    pid: int, token: str, grace_seconds: int, *, force: bool, state_dir: Path | None = None
 ) -> bool:
-    check = verify_token(pid, token)
+    check = verify_token(pid, token, state_dir=state_dir)
     if check == IdentityCheckResult.not_found:
         sys.stdout.write(json.dumps({"stopped": False, "reason": "not found"}))
         sys.stdout.write("\n")
@@ -178,7 +191,7 @@ def _kill_with_identity(  # pylint: disable=too-many-return-statements  # reason
         sys.stdout.flush()
         return False
 
-    recheck = verify_token(pid, token)
+    recheck = verify_token(pid, token, state_dir=state_dir)
     if recheck != IdentityCheckResult.match:
         sys.stdout.write(json.dumps({"stopped": False, "reason": "identity changed during grace"}))
         sys.stdout.write("\n")

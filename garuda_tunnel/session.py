@@ -101,3 +101,9 @@ class SessionDir:
         except (OSError, ValueError) as exc:
             raise SessionError(f"cannot read identity from {data}: {exc}") from exc
         return pid, token
+
+    @classmethod
+    def cleanup_path(cls, session_dir: str) -> None:
+        """Remove <session_dir>/tunnel-data best-effort (stop-side cleanup)."""
+        data = Path(session_dir).resolve() / _TUNNEL_DATA
+        shutil.rmtree(data, ignore_errors=True)

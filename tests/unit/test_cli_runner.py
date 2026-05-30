@@ -8,6 +8,8 @@ Code: garuda_tunnel/cli.py
 from __future__ import annotations
 
 import json
+import tempfile
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -20,7 +22,7 @@ pytestmark = pytest.mark.unit
 
 
 def _patch_spawn_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_spawn_daemon(schema: Any) -> dict[str, Any]:
+    def fake_spawn_daemon(schema: Any, session_dir: str | None = None) -> dict[str, Any]:
         return {
             "kind": "success",
             "payload": {
@@ -60,7 +62,7 @@ def test_start_success_returns_zero(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_start_required_failure_returns_two(monkeypatch: pytest.MonkeyPatch) -> None:
     """RequiredTunnelFailure is surfaced via exit code 2."""
 
-    def fake_spawn_daemon(schema: Any) -> dict[str, Any]:
+    def fake_spawn_daemon(schema: Any, session_dir: str | None = None) -> dict[str, Any]:
         return {
             "kind": "required_failure",
             "payload": {
@@ -92,7 +94,7 @@ def test_start_required_failure_returns_two(monkeypatch: pytest.MonkeyPatch) -> 
 def test_start_daemon_error_returns_four(monkeypatch: pytest.MonkeyPatch) -> None:
     """daemon_error IPC kind surfaces via exit code 4."""
 
-    def fake_spawn_daemon(schema: Any) -> dict[str, Any]:
+    def fake_spawn_daemon(schema: Any, session_dir: str | None = None) -> dict[str, Any]:
         return {
             "kind": "daemon_error",
             "payload": {
@@ -121,21 +123,36 @@ def test_start_daemon_error_returns_four(monkeypatch: pytest.MonkeyPatch) -> Non
     assert out["error"] == "DaemonError"
 
 
+def _make_session_dir(pid: int, token: str) -> str:
+    """Create a temp session dir with daemon.pid and token files under tunnel-data/."""
+    sd = tempfile.mkdtemp()
+    data = Path(sd) / "tunnel-data"
+    data.mkdir()
+    (data / "daemon.pid").write_text(f"{pid}\n")
+    (data / "token").write_text(f"{token}\n")
+    return sd
+
+
 def test_stop_unknown_pid_reports_not_found() -> None:
-    """stop on a PID that does not exist reports stopped=False with reason."""
-    # PID 99_999_999 is well above pid_max on Linux runners; guaranteed not found.
-    result = CliRunner().invoke(main, ["stop", "--pid", "99999999", "--token", "x"])
+    """stop with a session dir pointing at a non-existent PID reports stopped=False."""
+    sd = _make_session_dir(99999999, "x")
+    result = CliRunner().invoke(main, ["stop", "--session-dir", sd])
     assert result.exit_code == 0, result.output
     out = json.loads(result.output)
     assert out == {"stopped": False, "reason": "not found"}
 
 
 def test_stop_token_mismatch_reports_reason(monkeypatch: pytest.MonkeyPatch) -> None:
-    """stop on a PID with mismatched token reports stopped=False with reason."""
+    """stop with a session dir pointing at a mismatched token reports stopped=False."""
     from garuda_tunnel.identity import IdentityCheckResult
 
-    monkeypatch.setattr(cli_mod, "verify_token", lambda pid, token: IdentityCheckResult.mismatch)
-    result = CliRunner().invoke(main, ["stop", "--pid", "12345", "--token", "x"])
+    monkeypatch.setattr(
+        cli_mod,
+        "verify_token",
+        lambda pid, token, state_dir=None: IdentityCheckResult.mismatch,
+    )
+    sd = _make_session_dir(12345, "x")
+    result = CliRunner().invoke(main, ["stop", "--session-dir", sd])
     assert result.exit_code == 0
     out = json.loads(result.output)
     assert out == {"stopped": False, "reason": "token mismatch"}
@@ -145,8 +162,13 @@ def test_stop_identity_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     """stop reports unavailable identity (e.g., /proc not readable)."""
     from garuda_tunnel.identity import IdentityCheckResult
 
-    monkeypatch.setattr(cli_mod, "verify_token", lambda pid, token: IdentityCheckResult.unavailable)
-    result = CliRunner().invoke(main, ["stop", "--pid", "12345", "--token", "x"])
+    monkeypatch.setattr(
+        cli_mod,
+        "verify_token",
+        lambda pid, token, state_dir=None: IdentityCheckResult.unavailable,
+    )
+    sd = _make_session_dir(12345, "x")
+    result = CliRunner().invoke(main, ["stop", "--session-dir", sd])
     assert result.exit_code == 0
     out = json.loads(result.output)
     assert out == {"stopped": False, "reason": "identity check unavailable"}
@@ -194,7 +216,7 @@ def test_start_schema_violation_returns_one() -> None:
 def test_start_unexpected_exception_returns_four(monkeypatch: pytest.MonkeyPatch) -> None:
     """Unexpected exception in spawn_daemon is wrapped in DaemonError (exit 4)."""
 
-    def boom(schema: Any) -> dict[str, Any]:
+    def boom(schema: Any, session_dir: str | None = None) -> dict[str, Any]:
         raise RuntimeError("boom")
 
     monkeypatch.setattr(cli_mod, "spawn_daemon", boom)
