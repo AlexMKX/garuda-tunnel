@@ -100,3 +100,17 @@ def test_node_kube_targets_rejects_too_long_key() -> None:
         InputSchema.model_validate(
             {"nodes": {"a": make_node(kube_targets={"a" * 65: {"kubeconfig_path": "/x"}})}}
         )
+
+
+def test_daemon_materialize_default_false() -> None:
+    """DaemonOptions.materialize defaults to False."""
+    schema = InputSchema.model_validate({"nodes": {"a": make_node()}})
+    assert schema.daemon.materialize is False
+
+
+def test_daemon_materialize_explicit_true() -> None:
+    """DaemonOptions.materialize honours an explicit True."""
+    schema = InputSchema.model_validate(
+        {"nodes": {"a": make_node()}, "daemon": {"materialize": True}}
+    )
+    assert schema.daemon.materialize is True

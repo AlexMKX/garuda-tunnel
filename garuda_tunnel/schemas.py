@@ -73,6 +73,14 @@ class DaemonOptions(BaseModel):
             "Null (default) disables auto-shutdown."
         ),
     )
+    materialize: bool = Field(
+        default=False,
+        description=(
+            "If True, fetched/patched files (e.g. kube_targets kubeconfig) are "
+            "written mode 0600 into the session dir's tunnel-data/ and removed "
+            "on stop/atexit. Default False keeps content off disk."
+        ),
+    )
 
 
 class FileSpec(BaseModel):
