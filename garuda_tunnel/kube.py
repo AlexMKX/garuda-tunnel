@@ -23,7 +23,9 @@ __all__ = [
     "KubeParseError",
     "KubeconfigView",
     "choose_tls_server_name",
+    "dump_kubeconfig",
     "parse_kubeconfig",
+    "patch_view",
     "sans_from_cert",
 ]
 
@@ -178,6 +180,43 @@ def choose_tls_server_name(
     if ip_sans:
         return ip_sans[0], True
     return None, True
+
+
+def patch_view(
+    view: KubeconfigView,
+    *,
+    local_port: int,
+    tls_server_name: str | None,
+    insecure: bool,
+) -> None:
+    """Patch the current-context cluster in-place on the ruamel doc.
+
+    Rewrites `server:` to the local forwarded endpoint. On secure patch sets
+    `tls-server-name`. On insecure patch sets `insecure-skip-tls-verify: true`
+    and removes `certificate-authority-data`. Other clusters are untouched.
+    """
+    doc = view.doc
+    assert isinstance(doc, dict)
+    cluster = _find_named(doc.get("clusters") or [], view.cluster_name)
+    assert cluster is not None  # parse_kubeconfig guaranteed this
+    body_raw = cluster["cluster"]
+    assert isinstance(body_raw, dict), "parse_kubeconfig guaranteed cluster.cluster is a dict"
+    body: dict[str, object] = body_raw
+    body["server"] = f"https://127.0.0.1:{local_port}"
+    if insecure:
+        body["insecure-skip-tls-verify"] = True
+        body.pop("certificate-authority-data", None)
+        body.pop("tls-server-name", None)
+    else:
+        if tls_server_name is not None:
+            body["tls-server-name"] = tls_server_name
+
+
+def dump_kubeconfig(view: KubeconfigView) -> bytes:
+    """Serialise the (patched) ruamel doc back to YAML bytes."""
+    buf = io.BytesIO()
+    _yaml().dump(view.doc, buf)
+    return buf.getvalue()
 
 
 def _string_field(body: dict[str, object], field_name: str, owner: str) -> str:
