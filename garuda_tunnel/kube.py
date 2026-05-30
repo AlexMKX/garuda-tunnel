@@ -15,9 +15,9 @@ from dataclasses import dataclass, field
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
+from garuda_tunnel.exceptions import KubeParseError
 
-class KubeParseError(Exception):
-    """A kubeconfig could not be parsed or lacked a usable current-context."""
+__all__ = ["KubeParseError", "KubeconfigView", "parse_kubeconfig"]
 
 
 @dataclass
@@ -105,9 +105,11 @@ def parse_kubeconfig(raw: bytes) -> KubeconfigView:
         cluster_name=str(cluster_name),
         user_name=str(user_name),
         server=server,
-        certificate_authority_data=str(cluster_body.get("certificate-authority-data") or ""),
-        client_certificate_data=str(user_body.get("client-certificate-data") or ""),
-        client_key_data=str(user_body.get("client-key-data") or ""),
+        certificate_authority_data=_string_field(
+            cluster_body, "certificate-authority-data", cluster_name
+        ),
+        client_certificate_data=_string_field(user_body, "client-certificate-data", user_name),
+        client_key_data=_string_field(user_body, "client-key-data", user_name),
         ignored_contexts=ignored,
     )
 
@@ -120,3 +122,17 @@ def _find_named(items: object, name: str) -> dict[str, object] | None:
         if isinstance(entry, dict) and entry.get("name") == name:
             return entry
     return None
+
+
+def _string_field(body: dict[str, object], field_name: str, owner: str) -> str:
+    """Return ``body[field_name]`` if absent or a string; raise on wrong type.
+
+    Empty/missing fields return ``""`` (kubeconfigs may legitimately omit CA in
+    insecure mode). A present-but-non-string value is a malformed kubeconfig.
+    """
+    value = body.get(field_name)
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise KubeParseError(f"{owner!r} {field_name} must be a string, got {type(value).__name__}")
+    return value
