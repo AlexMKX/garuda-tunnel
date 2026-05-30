@@ -1,0 +1,18 @@
+apiVersion: v1
+clusters:
+- cluster:
+    #insecure-skip-tls-verify: true
+    server: https://10.0.0.11:6443
+    certificate-authority-data: Y2EtZGF0YQ==
+  name: production
+contexts:
+- context: { cluster: production, namespace: production, user: production }
+  name: production
+current-context: production
+kind: Config
+preferences: {}
+users:
+- name: production
+  user:
+    client-certificate-data: Y2VydC1kYXRh
+    client-key-data: a2V5LWRhdGE=
