@@ -12,12 +12,20 @@ from __future__ import annotations
 import io
 from dataclasses import dataclass, field
 
+from cryptography import x509
+from cryptography.x509.oid import ExtensionOID
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 from garuda_tunnel.exceptions import KubeParseError
 
-__all__ = ["KubeParseError", "KubeconfigView", "parse_kubeconfig"]
+__all__ = [
+    "KubeParseError",
+    "KubeconfigView",
+    "choose_tls_server_name",
+    "parse_kubeconfig",
+    "sans_from_cert",
+]
 
 
 @dataclass
@@ -122,6 +130,54 @@ def _find_named(items: object, name: str) -> dict[str, object] | None:
         if isinstance(entry, dict) and entry.get("name") == name:
             return entry
     return None
+
+
+def _host_of(server: str) -> str:
+    """Extract the host from an https URL (strip scheme, port, path)."""
+    rest = server.split("://", 1)[-1]
+    authority = rest.split("/", 1)[0]
+    if authority.startswith("["):  # [ipv6]:port
+        return authority[1 : authority.find("]")]
+    return authority.rsplit(":", 1)[0] if ":" in authority else authority
+
+
+def sans_from_cert(cert_der: bytes) -> tuple[list[str], list[str]]:
+    """Return (dns_sans, ip_sans) parsed from a DER-encoded certificate.
+
+    On any parse failure or absent SAN extension, returns ([], []).
+    """
+    try:
+        cert = x509.load_der_x509_certificate(cert_der)
+        ext = cert.extensions.get_extension_for_oid(ExtensionOID.SUBJECT_ALTERNATIVE_NAME)
+        san: x509.SubjectAlternativeName = ext.value  # type: ignore[assignment]
+        dns = list(san.get_values_for_type(x509.DNSName))
+        ips = [str(ip) for ip in san.get_values_for_type(x509.IPAddress)]
+        return dns, ips
+    except Exception:  # noqa: BLE001  # pylint: disable=broad-exception-caught
+        # A malformed/absent SAN is not a daemon error: the caller treats an
+        # empty result as "no usable name" and applies insecure_fallback policy.
+        return [], []
+
+
+def choose_tls_server_name(
+    *,
+    original_host: str,
+    dns_sans: list[str],
+    ip_sans: list[str],
+) -> tuple[str | None, bool]:
+    """Choose a tls-server-name; return (name, fellback).
+
+    Preference: original host if present in SAN; else first DNS SAN; else
+    first IP SAN; else None. `fellback` is True whenever the chosen name is
+    not an exact match of `original_host` (including the None case).
+    """
+    if original_host in dns_sans:
+        return original_host, False
+    if dns_sans:
+        return dns_sans[0], True
+    if ip_sans:
+        return ip_sans[0], True
+    return None, True
 
 
 def _string_field(body: dict[str, object], field_name: str, owner: str) -> str:
