@@ -210,9 +210,13 @@ def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     try:
         session = SessionDir.create(supplied=args.session_dir)
-        data_dir = Path(session.session_dir) / "tunnel-data"
-        lock_fd = _acquire_identity_lock(args.token, data_dir)
-        session.write_identity(pid=os.getpid(), token=args.token)
+        try:
+            data_dir = Path(session.session_dir) / "tunnel-data"
+            lock_fd = _acquire_identity_lock(args.token, data_dir)
+            session.write_identity(pid=os.getpid(), token=args.token)
+        except BaseException:
+            session.cleanup()
+            raise
     except Exception as exc:  # noqa: BLE001  # pylint: disable=broad-exception-caught
         _report_pre_run_failure(args.ipc_fd, exc)
         os._exit(4)
