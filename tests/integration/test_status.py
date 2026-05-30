@@ -1,7 +1,7 @@
 """garuda-tunnel status against a real daemon.
 
-Validates: alive-then-dead status transitions, plus token-mismatch
-detection through the real CLI binary.
+Validates: alive-then-dead status transitions, plus wrong-token detection
+through the real CLI binary.
 Code: garuda_tunnel/cli.py::status
 """
 
@@ -37,28 +37,58 @@ def test_status_alive_then_dead(
     }
     outcome = garuda_tunnel_start(payload)
     body = outcome["json"]
+    session_dir = body["session_dir"]
 
     alive = subprocess.run(
-        ["garuda-tunnel", "status", "--pid", str(body["pid"]), "--token", body["token"]],
+        [
+            "garuda-tunnel",
+            "status",
+            "--pid",
+            str(body["pid"]),
+            "--token",
+            body["token"],
+            "--session-dir",
+            session_dir,
+        ],
         capture_output=True,
         text=True,
     )
     assert json.loads(alive.stdout)["alive"] is True
 
+    # A wrong token with the correct session-dir: the lock file for "bad"
+    # does not exist in tunnel-data/, so verify_token returns not_found → alive=False.
     wrong = subprocess.run(
-        ["garuda-tunnel", "status", "--pid", str(body["pid"]), "--token", "bad"],
+        [
+            "garuda-tunnel",
+            "status",
+            "--pid",
+            str(body["pid"]),
+            "--token",
+            "bad",
+            "--session-dir",
+            session_dir,
+        ],
         capture_output=True,
         text=True,
     )
     assert json.loads(wrong.stdout)["alive"] is False
 
     subprocess.run(
-        ["garuda-tunnel", "stop", "--pid", str(body["pid"]), "--token", body["token"]],
+        ["garuda-tunnel", "stop", "--session-dir", session_dir],
         capture_output=True,
     )
 
     dead = subprocess.run(
-        ["garuda-tunnel", "status", "--pid", str(body["pid"]), "--token", body["token"]],
+        [
+            "garuda-tunnel",
+            "status",
+            "--pid",
+            str(body["pid"]),
+            "--token",
+            body["token"],
+            "--session-dir",
+            session_dir,
+        ],
         capture_output=True,
         text=True,
     )

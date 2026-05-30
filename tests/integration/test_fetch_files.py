@@ -241,6 +241,6 @@ def test_fetch_files_breaking_shape(
     started_daemons.append((body["pid"], body["token"]))
     node_out = body["connections"]["a"]
     assert isinstance(node_out, dict)
-    assert set(node_out.keys()) == {"ports", "fetch_files"}
+    assert set(node_out.keys()) == {"ports", "fetch_files", "kube_targets"}
     assert isinstance(node_out["ports"], dict)
     assert isinstance(node_out["fetch_files"], dict)
