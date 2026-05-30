@@ -10,6 +10,17 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 _FETCH_FILES_KEY_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]*$")
 
 
+def _validate_identifier_key(kind: str, name: str) -> None:
+    """Reject a dict key that is not a safe ≤64-char identifier.
+
+    Shared by fetch_files / kube_targets / nodes key validation.
+    """
+    if len(name) > 64:
+        raise ValueError(f"{kind} key {name!r}: max 64 chars")
+    if not _FETCH_FILES_KEY_RE.match(name):
+        raise ValueError(f"{kind} key {name!r}: must match ^[a-zA-Z_][a-zA-Z0-9_-]*$")
+
+
 def _parse_host_port(value: str) -> tuple[str, int]:
     """Parse 'host:port' or '[ipv6]:port' into (host, port).
 
@@ -222,10 +233,7 @@ class NodeInput(BaseModel):
         if len(value) > 16:
             raise ValueError("fetch_files: at most 16 entries per node")
         for name in value:
-            if len(name) > 64:
-                raise ValueError(f"fetch_files key {name!r}: max 64 chars")
-            if not _FETCH_FILES_KEY_RE.match(name):
-                raise ValueError(f"fetch_files key {name!r}: must match ^[a-zA-Z_][a-zA-Z0-9_-]*$")
+            _validate_identifier_key("fetch_files", name)
         return value
 
     @field_validator("kube_targets")
@@ -240,10 +248,7 @@ class NodeInput(BaseModel):
         if len(value) > 16:
             raise ValueError("kube_targets: at most 16 entries per node")
         for name in value:
-            if len(name) > 64:
-                raise ValueError(f"kube_targets key {name!r}: max 64 chars")
-            if not _FETCH_FILES_KEY_RE.match(name):
-                raise ValueError(f"kube_targets key {name!r}: must match ^[a-zA-Z_][a-zA-Z0-9_-]*$")
+            _validate_identifier_key("kube_targets", name)
         return value
 
 
@@ -259,10 +264,7 @@ class InputSchema(BaseModel):
     @classmethod
     def _validate_auth(cls, value: dict[str, NodeInput]) -> dict[str, NodeInput]:
         for name, node in value.items():
-            if not _FETCH_FILES_KEY_RE.match(name):
-                raise ValueError(f"node key {name!r}: must match ^[a-zA-Z_][a-zA-Z0-9_-]*$")
-            if len(name) > 64:
-                raise ValueError(f"node key {name!r}: max 64 chars")
+            _validate_identifier_key("node", name)
             if not node.ssh_pkey and not node.ssh_password:
                 raise ValueError(f"node {name!r}: must provide ssh_pkey or ssh_password")
         return value

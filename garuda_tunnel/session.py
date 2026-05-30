@@ -76,7 +76,9 @@ class SessionDir:
         return self._write_file(name, content)
 
     def _write_file(self, name: str, content: bytes) -> str:
-        if "/" in name or "\\" in name or name in (".", "..") or name.startswith((".", "..")):
+        if "/" in name or "\\" in name:
+            raise SessionError(f"unsafe materialized file name: {name!r}")
+        if name in (".", ".."):
             raise SessionError(f"unsafe materialized file name: {name!r}")
         path = self._data / name
         if path.resolve().parent != self._data.resolve():
