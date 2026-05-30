@@ -9,23 +9,33 @@ KubeParseError (never a daemon crash).
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import io
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from cryptography import x509
 from cryptography.x509.oid import ExtensionOID
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
+if TYPE_CHECKING:
+    import asyncssh
+
 from garuda_tunnel.exceptions import KubeParseError
+from garuda_tunnel.schemas import KubeTarget, KubeTargetOutput, TunnelWarning
 
 __all__ = [
     "KubeParseError",
     "KubeconfigView",
+    "ProbeFn",
     "choose_tls_server_name",
     "dump_kubeconfig",
     "parse_kubeconfig",
     "patch_view",
+    "run_kube_targets",
     "sans_from_cert",
 ]
 
@@ -231,3 +241,152 @@ def _string_field(body: dict[str, object], field_name: str, owner: str) -> str:
     if not isinstance(value, str):
         raise KubeParseError(f"{owner!r} {field_name} must be a string, got {type(value).__name__}")
     return value
+
+
+ProbeFn = Callable[[str, int], Awaitable[bytes]]
+
+
+async def run_kube_targets(  # pylint: disable=too-many-locals,too-many-branches  # reason: per-target try/except/warning fan-out
+    conn: "asyncssh.SSHClientConnection",
+    kube_targets: dict[str, KubeTarget],
+    *,
+    connect_timeout: int,
+    probe: ProbeFn,
+    node_name: str = "",
+) -> tuple[dict[str, KubeTargetOutput], list[str], list[TunnelWarning]]:
+    """Process every kube_target for a node; return (outputs, required_failures, warnings).
+
+    The local-forward listeners opened here are owned by the live SSH
+    connection (`conn`) and stay open for as long as the connection does; the
+    manager keeps `conn` in its `_NodeRuntime` and closes it on `stop_all`, so
+    the forwards do not need to be returned separately. Each target is
+    independent: a failure on one (subject to its `required`) does not abort the
+    others.
+    """
+    outputs: dict[str, KubeTargetOutput] = {}
+    required_failures: list[str] = []
+    warnings: list[TunnelWarning] = []
+
+    for name, target in kube_targets.items():
+        try:
+            raw = await asyncio.wait_for(
+                _fetch_one(conn, target.kubeconfig_path), timeout=connect_timeout
+            )
+            view = parse_kubeconfig(raw)
+        except (KubeParseError, OSError, asyncio.TimeoutError) as exc:
+            warnings.append(TunnelWarning(node=node_name, error=f"kube_target {name}: {exc}"))
+            if target.required:
+                required_failures.append(name)
+            continue
+
+        for ignored in view.ignored_contexts:
+            warnings.append(
+                TunnelWarning(
+                    node=node_name,
+                    error=f"kube_target {name}: ignored context {ignored!r}",
+                    skipped=False,
+                )
+            )
+
+        host, port = _split_host_port(view.server)
+        listener = await conn.forward_local_port("127.0.0.1", 0, host, port)
+        local_port = listener.get_port()
+
+        tls_name, insecure = await _resolve_tls(
+            target=target,
+            view=view,
+            host=host,
+            local_port=local_port,
+            probe=probe,
+            node_name=node_name,
+            name=name,
+            warnings=warnings,
+        )
+        if tls_name is None and not insecure:
+            if target.required:
+                required_failures.append(name)
+            warnings.append(
+                TunnelWarning(node=node_name, error=f"kube_target {name}: no usable TLS name")
+            )
+            listener.close()
+            await listener.wait_closed()
+            continue
+
+        patch_view(view, local_port=local_port, tls_server_name=tls_name, insecure=insecure)
+        patched = dump_kubeconfig(view)
+        outputs[name] = KubeTargetOutput(
+            cluster_name=view.cluster_name,
+            context_name=view.context_name,
+            local_port=local_port,
+            endpoint=f"https://127.0.0.1:{local_port}",
+            tls_server_name=None if insecure else tls_name,
+            certificate_authority_data="" if insecure else view.certificate_authority_data,
+            client_certificate_data=view.client_certificate_data,
+            client_key_data=view.client_key_data,
+            content_b64=base64.b64encode(patched).decode("ascii"),
+            path=None,
+        )
+    return outputs, required_failures, warnings
+
+
+def _split_host_port(server: str) -> tuple[str, int]:
+    host = _host_of(server)
+    rest = server.split("://", 1)[-1].split("/", 1)[0]
+    port_part = rest.rsplit(":", 1)[-1] if ":" in rest and not rest.endswith("]") else "443"
+    return host, int(port_part)
+
+
+async def _fetch_one(conn: "asyncssh.SSHClientConnection", path: str) -> bytes:
+    """Read a single small file over SFTP (1 MiB cap), return raw bytes."""
+    async with conn.start_sftp_client() as sftp:
+        stat = await sftp.stat(path)
+        if stat.size is not None and stat.size > (1 << 20):
+            raise OSError("kubeconfig exceeds 1 MiB cap")
+        async with sftp.open(path, "rb") as fh:
+            data = await fh.read((1 << 20) + 1)
+    raw = data if isinstance(data, bytes) else data.encode()
+    if len(raw) > (1 << 20):
+        raise OSError("kubeconfig exceeds 1 MiB cap")
+    return raw
+
+
+async def _resolve_tls(  # pylint: disable=too-many-arguments
+    *,
+    target: KubeTarget,
+    view: KubeconfigView,
+    host: str,
+    local_port: int,
+    probe: ProbeFn,
+    node_name: str,
+    name: str,
+    warnings: list[TunnelWarning],
+) -> tuple[str | None, bool]:
+    """Determine (tls_server_name, insecure) for one target."""
+    del view  # reserved for future per-view hints
+    if target.tls_server_name is not None:
+        return target.tls_server_name, False
+    cert_der = await probe("127.0.0.1", local_port)
+    dns_sans, ip_sans = sans_from_cert(cert_der)
+    chosen, fellback = choose_tls_server_name(
+        original_host=host, dns_sans=dns_sans, ip_sans=ip_sans
+    )
+    if chosen is None:
+        if target.insecure_fallback:
+            warnings.append(
+                TunnelWarning(
+                    node=node_name,
+                    error=f"kube_target {name}: TLS verification disabled (insecure_fallback)",
+                    skipped=False,
+                )
+            )
+            return None, True
+        return None, False
+    if fellback:
+        warnings.append(
+            TunnelWarning(
+                node=node_name,
+                error=f"kube_target {name}: tls-server-name fell back to {chosen!r}",
+                skipped=False,
+            )
+        )
+    return chosen, False
