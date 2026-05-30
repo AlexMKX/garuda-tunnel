@@ -93,3 +93,53 @@ def test_kube_target_end_to_end(
     )
     assert stop.returncode == 0, f"stop stdout={stop.stdout!r} stderr={stop.stderr!r}"
     assert not (Path(session_dir) / "tunnel-data").exists()
+
+
+def test_kube_target_insecure_fallback(
+    ssh_test_cluster: dict[str, Any], prepared_files: dict[str, Path]
+) -> None:
+    """A SAN-less cert with insecure_fallback=True yields insecure-skip-tls-verify."""
+    compose_file = Path(__file__).resolve().parent / "docker-compose.yml"
+    _wait_for_apiserver(compose_file, "fake-apiserver-nosan")
+
+    assert prepared_files["kube_nosan"].is_file()
+
+    session_dir = tempfile.mkdtemp(prefix="gt-kube-it-")
+    payload = {
+        "nodes": {
+            "node": {
+                "host": ssh_test_cluster["host"],
+                "port": ssh_test_cluster["bastion_port"],
+                "user": ssh_test_cluster["user"],
+                "ssh_pkey": ssh_test_cluster["private_pem"],
+                "remote_targets": {"keep": "127.0.0.1:22"},
+                "kube_targets": {
+                    "k3s": {
+                        "kubeconfig_path": "/srv/files/kube_nosan",
+                        "insecure_fallback": True,
+                    }
+                },
+            }
+        },
+        "daemon": {"auto_stop_idle_seconds": 60},
+    }
+    result = subprocess.run(
+        ["garuda-tunnel", "start", "--session-dir", session_dir],
+        input=json.dumps(payload),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    out = json.loads(result.stdout)
+    kt = out["connections"]["node"]["kube_targets"]["k3s"]
+    assert kt["tls_server_name"] is None, kt
+    assert kt["certificate_authority_data"] == "", kt
+    patched = base64.b64decode(kt["content_b64"]).decode()
+    assert "insecure-skip-tls-verify: true" in patched
+    assert any("insecure_fallback" in w["error"] for w in out["warnings"]), out["warnings"]
+
+    subprocess.run(
+        ["garuda-tunnel", "stop", "--session-dir", session_dir],
+        text=True, capture_output=True, check=False,
+    )
