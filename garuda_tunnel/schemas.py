@@ -259,6 +259,10 @@ class InputSchema(BaseModel):
     @classmethod
     def _validate_auth(cls, value: dict[str, NodeInput]) -> dict[str, NodeInput]:
         for name, node in value.items():
+            if not _FETCH_FILES_KEY_RE.match(name):
+                raise ValueError(f"node key {name!r}: must match ^[a-zA-Z_][a-zA-Z0-9_-]*$")
+            if len(name) > 64:
+                raise ValueError(f"node key {name!r}: max 64 chars")
             if not node.ssh_pkey and not node.ssh_password:
                 raise ValueError(f"node {name!r}: must provide ssh_pkey or ssh_password")
         return value

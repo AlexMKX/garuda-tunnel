@@ -114,3 +114,27 @@ def test_daemon_materialize_explicit_true() -> None:
         {"nodes": {"a": make_node()}, "daemon": {"materialize": True}}
     )
     assert schema.daemon.materialize is True
+
+
+def test_input_rejects_node_key_with_slash() -> None:
+    """A node key containing '/' is rejected (path-traversal guard)."""
+    with pytest.raises(ValidationError):
+        InputSchema.model_validate({"nodes": {"../evil": make_node()}})
+
+
+def test_input_rejects_node_key_bad_chars() -> None:
+    """A node key not matching the identifier pattern is rejected."""
+    with pytest.raises(ValidationError):
+        InputSchema.model_validate({"nodes": {"bad name": make_node()}})
+
+
+def test_input_rejects_node_key_too_long() -> None:
+    """A node key exceeding 64 chars is rejected."""
+    with pytest.raises(ValidationError):
+        InputSchema.model_validate({"nodes": {"a" * 65: make_node()}})
+
+
+def test_input_accepts_valid_node_key() -> None:
+    """A normal identifier node key is accepted."""
+    schema = InputSchema.model_validate({"nodes": {"hub": make_node()}})
+    assert "hub" in schema.nodes

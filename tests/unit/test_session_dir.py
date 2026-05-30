@@ -78,3 +78,17 @@ def test_write_identity_and_materialize(tmp_path: Path) -> None:
     assert (data_dir / "token").read_text().strip() == "tok"
     assert Path(path).read_bytes() == b"kubeconfig-bytes"
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+
+
+def test_write_file_rejects_traversal_name(tmp_path: Path) -> None:
+    """materialize() with a traversal name is rejected (defense in depth)."""
+    sd = SessionDir.create(supplied=None, base=tmp_path)
+    with pytest.raises(SessionError):
+        sd.materialize("../escaped", b"x")
+
+
+def test_write_file_rejects_slash_name(tmp_path: Path) -> None:
+    """materialize() with a nested path is rejected."""
+    sd = SessionDir.create(supplied=None, base=tmp_path)
+    with pytest.raises(SessionError):
+        sd.materialize("sub/dir", b"x")
