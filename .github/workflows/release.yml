@@ -39,11 +39,13 @@ jobs:
           coverage run -m pytest tests/integration -m integration -v
           coverage combine
           coverage report --fail-under=80
-      - run: python -m build
 
-      # Auto-increment SemVer tag (vX.Y.Z). If no tag exists yet, INITIAL_VERSION
-      # is used, so the first release becomes v0.0.1. Subsequent runs bump patch
-      # by default (DEFAULT_BUMP=patch).
+      # Auto-increment SemVer tag (vX.Y.Z) ONLY after all gates passed.
+      # INITIAL_VERSION=0.0.0 + DEFAULT_BUMP=patch means: when no tag exists,
+      # the very first tag becomes v0.0.1 (0.0.0 -> 0.0.1). Subsequent runs
+      # bump patch (v0.0.1 -> v0.0.2 -> ...).
+      # Tag must be created BEFORE `python -m build` so setuptools-scm picks
+      # up the new tag and produces a clean version in the artifact name.
       - name: Bump version and push tag
         id: tag
         uses: anothrNick/github-tag-action@1.75.0
@@ -51,9 +53,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           WITH_V: "true"
           DEFAULT_BUMP: patch
-          INITIAL_VERSION: 0.0.1
+          INITIAL_VERSION: 0.0.0
           TAG_CONTEXT: repo
           PRERELEASE: "false"
+
+      # Build sdist + wheel AFTER tag exists, so setuptools-scm sees the new
+      # tag on HEAD and emits artifacts named with the release version.
+      - run: python -m build
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
