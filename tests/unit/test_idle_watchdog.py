@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -28,7 +29,8 @@ async def test_no_activity_triggers_stop() -> None:
 async def test_active_connection_blocks_stop() -> None:
     """Open connection prevents stop_event from being set."""
     tracker = ActivityTracker()
-    tracker.connection_made("h", 1)  # never closed
+    ct = tracker.make_tracker()
+    ct.connection_made(MagicMock(), "h", 1)
     stop_event = asyncio.Event()
     task = asyncio.create_task(_idle_watchdog(tracker, timeout_seconds=1, stop_event=stop_event))
     await asyncio.sleep(2.5)
@@ -44,8 +46,9 @@ async def test_active_connection_blocks_stop() -> None:
 async def test_lost_after_idle_triggers_stop() -> None:
     """made + lost + wait fires the watchdog."""
     tracker = ActivityTracker()
-    tracker.connection_made("h", 1)
-    tracker.connection_lost("h", 1, None)
+    ct = tracker.make_tracker()
+    ct.connection_made(MagicMock(), "h", 1)
+    ct.connection_lost(None)
     stop_event = asyncio.Event()
     await asyncio.wait_for(
         _idle_watchdog(tracker, timeout_seconds=1, stop_event=stop_event),
@@ -72,7 +75,8 @@ async def test_cancellation_returns_cleanly() -> None:
 async def test_returns_early_when_stop_event_externally_set() -> None:
     """An externally-set stop_event ends the loop on next check."""
     tracker = ActivityTracker()
-    tracker.connection_made("h", 1)  # busy → wouldn't fire watchdog
+    ct = tracker.make_tracker()
+    ct.connection_made(MagicMock(), "h", 1)
     stop_event = asyncio.Event()
     task = asyncio.create_task(_idle_watchdog(tracker, timeout_seconds=1, stop_event=stop_event))
     await asyncio.sleep(0.1)

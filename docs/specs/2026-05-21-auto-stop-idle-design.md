@@ -479,3 +479,31 @@ Chose: `uvx` first, `pipx` second.
 - PEP 544 (Protocols): <https://peps.python.org/pep-0544/>
 - PEP 440 local version identifiers: <https://peps.python.org/pep-0440/#local-version-identifiers>
 - `uvx` docs: <https://docs.astral.sh/uv/guides/tools/>
+
+## Revision history
+
+**2026-06 rework** — the asyncssh tracker API shipped in PR ronf/asyncssh#807 differs
+substantially from the `ForwardTracker` Protocol originally specified here.
+
+Key changes:
+
+- **Class hierarchy instead of Protocol.** The hook base is
+  `SSHForwardTracker` (abstract), with two concrete subclasses:
+  `SSHPortForwardTracker` (TCP) and `SSHPathForwardTracker` (UNIX).
+- **Per-connection factory, not shared object.** `tracker_factory=` (a
+  zero-argument callable) replaces the original `tracker=` kwarg.
+  asyncssh calls the factory once per accepted connection; callers must
+  not share state inside the returned tracker instance.
+- **`connection_made` signature changed.** TCP: `connection_made(forwarder,
+  orig_host, orig_port)`; UNIX: `connection_made(forwarder)`. The
+  `forwarder` argument is an `SSHForwarder` instance, not present in the
+  original spec.
+- **`connection_lost(exc)` unchanged** (single argument, called once per
+  connection). Guard against double-call is now in `_IdleConnectionTracker`
+  via `_opened`/`_closed` flags.
+- **Byte-level observer hooks added:** `forward_local_bytes(data)` and
+  `forward_remote_bytes(data)` on `SSHForwardTracker`; not overridden by
+  `_IdleConnectionTracker`.
+- **`garuda_tunnel.activity` updated** to implement `_IdleConnectionTracker`
+  as `SSHPortForwardTracker` and expose `ActivityTracker.make_tracker` as
+  the factory.

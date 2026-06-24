@@ -12,7 +12,6 @@ from garuda_tunnel.exceptions import TunnelStartupError
 from garuda_tunnel.schemas import InputSchema
 from garuda_tunnel.ssh import open_local_forwards
 
-
 pytestmark = pytest.mark.unit
 
 
@@ -122,16 +121,16 @@ async def test_forward_failure_cleans_up_previous_listeners(
 
 
 @pytest.mark.asyncio
-async def test_forward_local_port_receives_tracker(
+async def test_forward_local_port_receives_tracker_factory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """open_local_forwards passes its tracker kwarg through to asyncssh."""
+    """open_local_forwards passes its tracker_factory kwarg through to asyncssh."""
     schema = InputSchema.model_validate(
         {"nodes": {"a": make_node(remote_targets={"p": "10.0.0.1:6443"})}}
     )
     node = schema.nodes["a"]
 
-    received_tracker: list[object] = []
+    received_tracker_factory: list[object] = []
 
     async def fake_forward_local_port(
         listen_host: str,
@@ -139,9 +138,9 @@ async def test_forward_local_port_receives_tracker(
         dest_host: str,
         dest_port: int,
         *,
-        tracker: object = None,
+        tracker_factory: object = None,
     ) -> MagicMock:
-        received_tracker.append(tracker)
+        received_tracker_factory.append(tracker_factory)
         return _fake_listener(54321)
 
     conn = MagicMock()
@@ -149,6 +148,6 @@ async def test_forward_local_port_receives_tracker(
     monkeypatch.setattr("garuda_tunnel.ssh._probe_local_port", lambda *_args, **_kw: True)
 
     sentinel = object()
-    await open_local_forwards(conn, node, tracker=sentinel)
+    await open_local_forwards(conn, node, tracker_factory=sentinel)
 
-    assert received_tracker == [sentinel]
+    assert received_tracker_factory == [sentinel]

@@ -9,7 +9,7 @@ multiplex an SFTP channel without a second authentication.
 from __future__ import annotations
 
 import socket
-from typing import Any
+from typing import Any, Callable
 
 import asyncssh
 
@@ -53,13 +53,13 @@ async def open_connection(node: NodeInput) -> asyncssh.SSHClientConnection:
 async def open_local_forwards(
     conn: asyncssh.SSHClientConnection,
     node: NodeInput,
-    tracker: asyncssh.ForwardTracker | None = None,
+    tracker_factory: Callable[[], asyncssh.SSHForwardTracker] | None = None,
 ) -> tuple[dict[str, int], list[asyncssh.SSHListener]]:
     """Open one direct-tcpip forward per remote_target.
 
-    If ``tracker`` is provided, asyncssh invokes its hooks on every client
-    connect/disconnect on the local listener. Used by the daemon for
-    idle-based auto-shutdown.
+    If ``tracker_factory`` is provided, asyncssh calls it once per accepted
+    connection to build a per-connection tracker whose hooks observe that
+    connection's lifecycle. Used by the daemon for idle-based auto-shutdown.
 
     Returns ``(handle->local_port, listeners)``. Local bind host is always
     ``127.0.0.1``; the listen port is OS-assigned. ``target.host`` is the
@@ -76,7 +76,7 @@ async def open_local_forwards(
                 0,
                 target.host,
                 target.port,
-                tracker=tracker,
+                tracker_factory=tracker_factory,
             )
             listeners.append(listener)
             actual_port = listener.get_port()
