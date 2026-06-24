@@ -141,7 +141,7 @@ class TunnelManager:
 
         try:
             entries, listeners = await open_local_forwards(
-                runtime.conn, node, tracker=self.activity_tracker
+                runtime.conn, node, tracker_factory=self.activity_tracker.make_tracker
             )
         except _NODE_STARTUP_ERRORS as exc:
             runtime.error = str(exc)

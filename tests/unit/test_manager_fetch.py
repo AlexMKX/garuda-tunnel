@@ -56,7 +56,7 @@ def _patch_transport(monkeypatch: pytest.MonkeyPatch, fake_conn: _FakeConn) -> N
         return fake_conn
 
     async def fake_open_local_forwards(
-        conn: Any, node: Any, *, tracker: Any = None
+        conn: Any, node: Any, *, tracker_factory: Any = None
     ) -> tuple[dict[str, int], list[Any]]:
         return {"p": 40000}, []
 
@@ -149,7 +149,7 @@ async def test_fetch_skipped_when_forward_fails(monkeypatch: pytest.MonkeyPatch)
     async def fake_open_connection(node: Any) -> _FakeConn:
         return fake_conn
 
-    async def boom(conn: Any, node: Any, *, tracker: Any = None) -> Any:
+    async def boom(conn: Any, node: Any, *, tracker_factory: Any = None) -> Any:
         raise TunnelStartupError(
             "local forward did not accept connection",
             {"remote_port": 6443, "local_port": 40000},
