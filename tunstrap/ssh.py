@@ -39,10 +39,12 @@ async def open_connection(node: NodeInput) -> asyncssh.SSHClientConnection:
         "port": node.port,
         "username": node.user,
         "known_hosts": None,
-        "client_keys": _load_client_keys(node),
         "connect_timeout": node.ssh_options.connect_timeout,
         "keepalive_interval": 30,
     }
+    client_keys = _load_client_keys(node)
+    if client_keys is not None:
+        kwargs["client_keys"] = client_keys
     if node.ssh_password is not None:
         kwargs["password"] = node.ssh_password
     if node.ssh_options.compression:
