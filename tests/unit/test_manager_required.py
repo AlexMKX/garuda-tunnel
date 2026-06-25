@@ -3,7 +3,7 @@
 Validates: required-node failures abort start_all and optional-node
 failures degrade to warnings; the full output is OutputSchema vs
 ErrorOutput depending on which path is hit.
-Code: garuda_tunnel/manager.py
+Code: tunstrap/manager.py
 """
 
 from __future__ import annotations
@@ -13,9 +13,9 @@ from typing import Any
 import asyncssh
 import pytest
 
-from garuda_tunnel import manager as manager_mod
-from garuda_tunnel.manager import TunnelManager
-from garuda_tunnel.schemas import ErrorOutput, InputSchema, OutputSchema
+from tunstrap import manager as manager_mod
+from tunstrap.manager import TunnelManager
+from tunstrap.schemas import ErrorOutput, InputSchema, OutputSchema
 
 pytestmark = pytest.mark.unit
 
@@ -76,7 +76,7 @@ async def test_required_failure_aborts_start(monkeypatch: pytest.MonkeyPatch) ->
     """A required-node failure causes start_all to return ErrorOutput."""
     _patch_transport_per_host(monkeypatch, bad_host="b-host")
     mgr = TunnelManager(_two_node_schema(a_required=True, b_required=True))
-    out = await mgr.start_all_and_build_output(pid=1, token="t", session_dir="/tmp/x")
+    out = await mgr.start_all_and_build_output(pid=1, session_dir="/tmp/x")
     assert isinstance(out, ErrorOutput)
 
 
@@ -85,7 +85,7 @@ async def test_optional_failure_becomes_warning(monkeypatch: pytest.MonkeyPatch)
     """An optional-node failure is reported as a TunnelWarning, not an error."""
     _patch_transport_per_host(monkeypatch, bad_host="b-host")
     mgr = TunnelManager(_two_node_schema(a_required=True, b_required=False))
-    out = await mgr.start_all_and_build_output(pid=1, token="t", session_dir="/tmp/x")
+    out = await mgr.start_all_and_build_output(pid=1, session_dir="/tmp/x")
     assert isinstance(out, OutputSchema)
     assert "a" in out.connections
     assert "b" not in out.connections
@@ -102,7 +102,7 @@ async def test_all_optional_all_fail_returns_empty_success(monkeypatch: pytest.M
     monkeypatch.setattr(manager_mod, "open_connection", fake_open_connection_all_fail)
 
     mgr = TunnelManager(_two_node_schema(a_required=False, b_required=False))
-    out = await mgr.start_all_and_build_output(pid=1, token="t", session_dir="/tmp/x")
+    out = await mgr.start_all_and_build_output(pid=1, session_dir="/tmp/x")
     assert isinstance(out, OutputSchema)
     assert out.connections == {}
     assert len(out.warnings) == 2
@@ -113,6 +113,6 @@ async def test_all_required_all_pass(monkeypatch: pytest.MonkeyPatch) -> None:
     """All-required all-succeed case returns OutputSchema with both nodes."""
     _patch_transport_per_host(monkeypatch, bad_host=None)
     mgr = TunnelManager(_two_node_schema(a_required=True, b_required=True))
-    out = await mgr.start_all_and_build_output(pid=1, token="t", session_dir="/tmp/x")
+    out = await mgr.start_all_and_build_output(pid=1, session_dir="/tmp/x")
     assert isinstance(out, OutputSchema)
     assert sorted(out.connections.keys()) == ["a", "b"]

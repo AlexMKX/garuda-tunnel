@@ -1,8 +1,8 @@
 """CLI runner unit tests.
 
-Validates: garuda_tunnel/cli.py command surface (start/stop/status)
+Validates: tunstrap/cli.py command surface (start/stop/status)
 including exit codes, JSON output, and error paths.
-Code: garuda_tunnel/cli.py
+Code: tunstrap/cli.py
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ from typing import Any
 import pytest
 from click.testing import CliRunner
 
-from garuda_tunnel import cli as cli_mod
-from garuda_tunnel.cli import main
+from tunstrap import cli as cli_mod
+from tunstrap.cli import main
 
 pytestmark = pytest.mark.unit
 
@@ -29,7 +29,6 @@ def _patch_spawn_success(monkeypatch: pytest.MonkeyPatch) -> None:
             "payload": {
                 "connections": {},
                 "pid": 4242,
-                "token": "tk",
                 "started_at": "2026-05-20T00:00:00Z",
                 "warnings": [],
             },
@@ -57,7 +56,6 @@ def test_start_success_returns_zero(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.exit_code == 0, result.output
     out = json.loads(result.output)
     assert out["pid"] == 4242
-    assert out["token"] == "tk"
 
 
 def test_start_required_failure_returns_two(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -124,33 +122,42 @@ def test_start_daemon_error_returns_four(monkeypatch: pytest.MonkeyPatch) -> Non
     assert out["error"] == "DaemonError"
 
 
-def test_status_with_session_dir_uses_state_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """status --session-dir threads <sd>/tunnel-data as state_dir to verify_token."""
-    from garuda_tunnel.identity import IdentityCheckResult
+def test_status_alive_by_session_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """status --session-dir reads the recorded pid and verifies via verify_session."""
+    from tunstrap.identity import IdentityCheckResult
 
-    captured: dict[str, Path | None] = {"state_dir": None}
+    data = tmp_path / "tunnel-data"
+    data.mkdir()
+    (data / "daemon.pid").write_text(f"{os.getpid()}\n")
 
-    def fake_verify(_pid: int, _token: str, state_dir: Path | None = None) -> object:
-        captured["state_dir"] = state_dir
+    captured: dict[str, object] = {"session_dir": None, "pid": None}
+
+    def fake_verify(session_dir: str, pid: int) -> object:
+        captured["session_dir"] = session_dir
+        captured["pid"] = pid
         return IdentityCheckResult.match
 
-    import garuda_tunnel.cli as cli_mod
-
-    monkeypatch.setattr(cli_mod, "verify_token", fake_verify)
-    runner = CliRunner()
-    result = runner.invoke(
-        cli_mod.main,
-        ["status", "--pid", str(os.getpid()), "--token", "tok", "--session-dir", str(tmp_path)],
-    )
+    monkeypatch.setattr(cli_mod, "verify_session", fake_verify)
+    result = CliRunner().invoke(cli_mod.main, ["status", "--session-dir", str(tmp_path)])
     assert result.exit_code == 0
-    assert captured["state_dir"] == (tmp_path.resolve() / "tunnel-data")
+    out = json.loads(result.output)
+    assert out == {"alive": True}
+    assert captured["session_dir"] == str(tmp_path)
+    assert captured["pid"] == os.getpid()
+
+
+def test_status_unknown_session_dir_reports_not_alive(tmp_path: Path) -> None:
+    """status against a session dir with no recorded pid returns alive=false."""
+    missing = tmp_path / "no-such-session"
+    result = CliRunner().invoke(main, ["status", "--session-dir", str(missing)])
+    assert result.exit_code == 0, result.output
+    out = json.loads(result.output)
+    assert out == {"alive": False}
 
 
 def test_stop_session_error_reports_and_exits_zero(tmp_path: Path) -> None:
     """stop --session-dir <nonexistent> returns structured JSON + exit 0."""
-    from garuda_tunnel.cli import main as cli_main
+    from tunstrap.cli import main as cli_main
 
     runner = CliRunner()
     missing = tmp_path / "no-such-session"
@@ -168,16 +175,15 @@ def test_stop_removes_tunnel_data_on_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """stop removes <session-dir>/tunnel-data after a successful match path."""
-    import garuda_tunnel.cli as cli_mod
-    from garuda_tunnel.identity import IdentityCheckResult
+    import tunstrap.cli as cli_mod
+    from tunstrap.identity import IdentityCheckResult
 
     sd = tmp_path / "session"
     data = sd / "tunnel-data"
     data.mkdir(parents=True)
     (data / "daemon.pid").write_text(f"{os.getpid()}\n")
-    (data / "token").write_text("tok\n")
 
-    def fake_verify(_pid: int, _token: str, state_dir: Path | None = None) -> object:
+    def fake_verify(_session_dir: str, _pid: int) -> object:
         return IdentityCheckResult.match
 
     call_count = {"n": 0}
@@ -187,7 +193,7 @@ def test_stop_removes_tunnel_data_on_success(
         if call_count["n"] >= 2:
             raise ProcessLookupError
 
-    monkeypatch.setattr(cli_mod, "verify_token", fake_verify)
+    monkeypatch.setattr(cli_mod, "verify_session", fake_verify)
     monkeypatch.setattr(os, "kill", fake_kill)
 
     runner = CliRunner()
@@ -196,72 +202,54 @@ def test_stop_removes_tunnel_data_on_success(
     assert not data.exists(), f"tunnel-data should be removed; result={result.output!r}"
 
 
-def _make_session_dir(pid: int, token: str) -> str:
-    """Create a temp session dir with daemon.pid and token files under tunnel-data/."""
+def _make_session_dir(pid: int) -> str:
+    """Create a temp session dir with a daemon.pid file under tunnel-data/."""
     sd = tempfile.mkdtemp()
     data = Path(sd) / "tunnel-data"
     data.mkdir()
     (data / "daemon.pid").write_text(f"{pid}\n")
-    (data / "token").write_text(f"{token}\n")
     return sd
 
 
 def test_stop_unknown_pid_reports_not_found() -> None:
     """stop with a session dir pointing at a non-existent PID reports stopped=False."""
-    sd = _make_session_dir(99999999, "x")
+    sd = _make_session_dir(99999999)
     result = CliRunner().invoke(main, ["stop", "--session-dir", sd])
     assert result.exit_code == 0, result.output
     out = json.loads(result.output)
     assert out == {"stopped": False, "reason": "not found"}
 
 
-def test_stop_token_mismatch_reports_reason(monkeypatch: pytest.MonkeyPatch) -> None:
-    """stop with a session dir pointing at a mismatched token reports stopped=False."""
-    from garuda_tunnel.identity import IdentityCheckResult
+def test_stop_identity_mismatch_reports_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    """stop where the live holder's pid differs reports an identity mismatch."""
+    from tunstrap.identity import IdentityCheckResult
 
     monkeypatch.setattr(
         cli_mod,
-        "verify_token",
-        lambda pid, token, state_dir=None: IdentityCheckResult.mismatch,
+        "verify_session",
+        lambda session_dir, pid: IdentityCheckResult.mismatch,
     )
-    sd = _make_session_dir(12345, "x")
+    sd = _make_session_dir(12345)
     result = CliRunner().invoke(main, ["stop", "--session-dir", sd])
     assert result.exit_code == 0
     out = json.loads(result.output)
-    assert out == {"stopped": False, "reason": "token mismatch"}
+    assert out == {"stopped": False, "reason": "identity mismatch"}
 
 
 def test_stop_identity_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     """stop reports unavailable identity (e.g., /proc not readable)."""
-    from garuda_tunnel.identity import IdentityCheckResult
+    from tunstrap.identity import IdentityCheckResult
 
     monkeypatch.setattr(
         cli_mod,
-        "verify_token",
-        lambda pid, token, state_dir=None: IdentityCheckResult.unavailable,
+        "verify_session",
+        lambda session_dir, pid: IdentityCheckResult.unavailable,
     )
-    sd = _make_session_dir(12345, "x")
+    sd = _make_session_dir(12345)
     result = CliRunner().invoke(main, ["stop", "--session-dir", sd])
     assert result.exit_code == 0
     out = json.loads(result.output)
     assert out == {"stopped": False, "reason": "identity check unavailable"}
-
-
-def test_status_unknown_pid_reports_not_alive() -> None:
-    """status on a PID that does not exist returns alive=false."""
-    result = CliRunner().invoke(main, ["status", "--pid", "99999999", "--token", "x"])
-    assert result.exit_code == 0, result.output
-    out = json.loads(result.output)
-    assert out == {"alive": False}
-
-
-def test_status_no_token_pid_alive(monkeypatch: pytest.MonkeyPatch) -> None:
-    """status without token returns alive=true when the PID exists."""
-    monkeypatch.setattr(os, "kill", lambda pid, sig: None)
-    result = CliRunner().invoke(main, ["status", "--pid", "12345"])
-    assert result.exit_code == 0
-    out = json.loads(result.output)
-    assert out == {"alive": True}
 
 
 def test_start_invalid_json_returns_one() -> None:
@@ -307,3 +295,92 @@ def test_start_unexpected_exception_returns_four(monkeypatch: pytest.MonkeyPatch
     assert result.exit_code == 4
     out = json.loads(result.output)
     assert out["error"] == "DaemonError"
+
+
+# ---------------------------------------------------------------------------
+# Task B3: flag mode, conflict validation, --output env
+# ---------------------------------------------------------------------------
+
+
+def test_start_flag_mode_builds_schema(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Flag mode: USER@HOST + --target builds the correct single-node InputSchema."""
+    captured: dict[str, Any] = {}
+
+    def fake_spawn(schema: Any, session_dir: str | None = None) -> dict[str, Any]:
+        captured["schema"] = schema
+        return {
+            "kind": "success",
+            "payload": {
+                "connections": {},
+                "pid": 1,
+                "session_dir": "/s",
+                "started_at": "now",
+            },
+        }
+
+    monkeypatch.setattr(cli_mod, "spawn_daemon", fake_spawn)
+    # --ssh-password-stdin reads the password from stdin (first line)
+    res = CliRunner().invoke(
+        main,
+        ["start", "root@h:22", "--target", "db=127.0.0.1:5432", "--ssh-password-stdin"],
+        input="secret\n",
+    )
+    assert res.exit_code == 0, res.output
+    assert captured["schema"].nodes["node"].user == "root"
+
+
+def test_start_rejects_trailing_command() -> None:
+    """start + trailing -- CMD is rejected (exit 64); output mentions 'run'."""
+    res = CliRunner().invoke(main, ["start", "root@h", "--", "helm", "list"])
+    assert res.exit_code == 64
+    assert "run" in res.output.lower()
+
+
+def test_start_connection_plus_stdin_rejected() -> None:
+    """Providing a connection arg AND non-empty stdin is rejected (exit 64)."""
+    res = CliRunner().invoke(
+        main,
+        ["start", "root@h", "--target", "a=192.0.2.1:1"],
+        input='{"nodes":{}}',
+    )
+    assert res.exit_code == 64
+
+
+def test_start_conn_flag_without_connection_rejected() -> None:
+    """Conn flags without a connection argument are rejected (exit 64)."""
+    res = CliRunner().invoke(main, ["start", "--target", "a=192.0.2.1:1"])
+    assert res.exit_code == 64
+
+
+def test_start_output_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--output env prints export lines including TUNSTRAP_DB_PORT."""
+
+    def fake_spawn(schema: Any, session_dir: str | None = None) -> dict[str, Any]:
+        return {
+            "kind": "success",
+            "payload": {
+                "connections": {
+                    "h": {"ports": {"db": 5432}, "fetch_files": {}, "kube_targets": {}}
+                },
+                "pid": 7,
+                "session_dir": "/s",
+                "started_at": "now",
+            },
+        }
+
+    monkeypatch.setattr(cli_mod, "spawn_daemon", fake_spawn)
+    res = CliRunner().invoke(
+        main,
+        [
+            "start",
+            "u@h",
+            "--target",
+            "db=127.0.0.1:5432",
+            "--output",
+            "env",
+            "--ssh-password-stdin",
+        ],
+        input="secret\n",
+    )
+    assert res.exit_code == 0, res.output
+    assert "export TUNSTRAP_DB_PORT='5432'" in res.output

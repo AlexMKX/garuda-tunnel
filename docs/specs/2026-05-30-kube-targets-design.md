@@ -2,14 +2,14 @@
 
 **Date:** 2026-05-30
 **Status:** Approved (brainstorming complete)
-**Repo:** `garuda-tunnel`
+**Repo:** `tunstrap`
 **Branch:** `feature/kube-targets`
 
 ## Problem
 
-Consumers of `garuda-tunnel` that talk to k3s/Kubernetes clusters over the
+Consumers of `tunstrap` that talk to k3s/Kubernetes clusters over the
 SSH tunnel must currently reconstruct a usable kubeconfig themselves. In the
-Terragrunt/Terraform consumer (`garuda-repo/examples/mini-site/garuda/locals.tf`,
+Terragrunt/Terraform consumer (`<consumer-repo>/examples/<stand>/locals.tf`,
 lines 169-245, ~75 lines of HCL) this means:
 
 1. `jsondecode` the tunnel output,
@@ -31,7 +31,7 @@ The raw kubeconfig is unusable as-is because:
   kubeconfig** — it lives in the apiserver's serving certificate SAN, which the
   kubeconfig does not contain.
 
-The goal is to make `garuda-tunnel` produce a ready-to-use kubeconfig so the
+The goal is to make `tunstrap` produce a ready-to-use kubeconfig so the
 HCL-side reconstruction disappears, while keeping the existing generic
 byte-forwarding (`remote_targets`) and "content never to disk" guarantee
 intact for current consumers.
@@ -359,9 +359,9 @@ tracked future feature. Operators on untrusted networks must not use kube mode
 until pinning lands. SAN probing reads only the remote serving certificate's SAN
 extension.
 
-## HCL consumer impact (separate migration phase, in garuda-repo / test-config / v-xxl-cx)
+## HCL consumer impact (separate migration phase, in consumer repos)
 
-This change is implemented in `garuda-tunnel`. The consumer migration is a
+This change is implemented in `tunstrap`. The consumer migration is a
 separate phase (different repos) and is described here for context only.
 
 ### `terragrunt.hcl` tunnel-up
@@ -379,8 +379,8 @@ The two `jq` calls disappear:
 
 ```bash
 [ -d "$SESSION_DIR/tunnel-data" ] || exit 0
-uvx --from git+https://github.com/AlexMKX/garuda-tunnel.git@main \
-  garuda-tunnel stop --session-dir "$SESSION_DIR" || true
+uvx --from git+https://github.com/AlexMKX/tunstrap.git@main \
+  tunstrap stop --session-dir "$SESSION_DIR" || true
 ```
 
 (The mock-state short-circuit stays — it is a Terragrunt lifecycle concern, not

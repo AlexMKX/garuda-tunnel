@@ -2,7 +2,7 @@
 
 Validates: a node with two entries pointing at the same remote port
 produces two distinct local listeners.
-Code: garuda_tunnel/ssh.py::open_local_forwards
+Code: tunstrap/ssh.py::open_local_forwards
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from tests.integration.conftest import garuda_tunnel_start
+from tests.integration.conftest import tunstrap_start
 
 
 pytestmark = pytest.mark.integration
@@ -19,7 +19,7 @@ pytestmark = pytest.mark.integration
 
 def test_two_forwards_to_same_remote_port(
     ssh_test_cluster: dict[str, Any],
-    started_daemons: list[tuple[int, str]],
+    started_daemons: list[str],
 ) -> None:
     """Two forwards to the same remote port yield distinct local ports."""
     payload = {
@@ -36,7 +36,7 @@ def test_two_forwards_to_same_remote_port(
             }
         }
     }
-    outcome = garuda_tunnel_start(payload)
+    outcome = tunstrap_start(payload)
     assert outcome["returncode"] == 0
     body = outcome["json"]
     node_out = body["connections"]["a"]
@@ -44,4 +44,4 @@ def test_two_forwards_to_same_remote_port(
     assert len(entries) == 2
     assert entries["p1"] != entries["p2"]
     assert node_out["fetch_files"] == {}
-    started_daemons.append((body["pid"], body["token"]))
+    started_daemons.append(body["session_dir"])

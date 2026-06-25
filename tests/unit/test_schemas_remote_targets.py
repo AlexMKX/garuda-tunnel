@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from garuda_tunnel.schemas import (
+from tunstrap.schemas import (
     InputSchema,
     NodeInput,
     NodeOutput,
@@ -89,9 +89,9 @@ class TestRemoteTargetsValidator:
         node = NodeInput.model_validate(_minimal_node(remote_targets={"kubeapi": "10.0.0.1:6443"}))
         assert node.remote_targets == {"kubeapi": RemoteTarget(host="10.0.0.1", port=6443)}
 
-    def test_empty_remote_targets_rejected(self) -> None:
-        """Zero targets is meaningless and disallowed."""
-        with pytest.raises(ValueError, match="at least 1 entry"):
+    def test_empty_remote_targets_alone_rejected(self) -> None:
+        """A node with only empty remote_targets (no kube_targets or fetch_files) is rejected."""
+        with pytest.raises(ValueError, match="at least one of"):
             NodeInput.model_validate(_minimal_node(remote_targets={}))
 
     def test_too_many_remote_targets_rejected(self) -> None:
@@ -183,7 +183,6 @@ class TestNodeOutputShape:
         original = OutputSchema(
             connections={"edge1": NodeOutput(ports={"kubeapi": 54321})},
             pid=123,
-            token="t",
             session_dir="/tmp/x",
             started_at="2026-05-20T00:00:00Z",
         )

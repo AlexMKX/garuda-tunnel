@@ -1,8 +1,8 @@
 """Fetcher behaviour against a fake SFTP client.
 
-Validates: garuda_tunnel/fetcher.py::fetch_files happy paths, EFBIG cap
+Validates: tunstrap/fetcher.py::fetch_files happy paths, EFBIG cap
 handling, error classification, and resource cleanup.
-Code: garuda_tunnel/fetcher.py
+Code: tunstrap/fetcher.py
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ from typing import Any
 import asyncssh
 import pytest
 
-from garuda_tunnel.fetcher import fetch_files
-from garuda_tunnel.schemas import FileSpec
+from tunstrap.fetcher import fetch_files
+from tunstrap.schemas import FileSpec
 
 pytestmark = pytest.mark.unit
 

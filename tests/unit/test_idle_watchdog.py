@@ -7,8 +7,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from garuda_tunnel._worker import _idle_watchdog
-from garuda_tunnel.activity import ActivityTracker
+from tunstrap._worker import _idle_watchdog
+from tunstrap.activity import ActivityTracker
 
 pytestmark = pytest.mark.unit
 

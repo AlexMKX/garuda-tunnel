@@ -1,4 +1,4 @@
-# garuda-tunnel
+# tunstrap
 
 > Open N SSH local-forward tunnels, fetch small remote config files, and
 > produce ready-to-use kubeconfigs — all in a single bootstrap. Built for
@@ -31,19 +31,19 @@ nodes whose apiserver binds to `127.0.0.1` only.
 `uvx` (recommended for one-shot / disposable use — no install needed):
 
 ```bash
-uvx --from git+https://github.com/AlexMKX/garuda-tunnel.git garuda-tunnel --help
+uvx --from git+https://github.com/AlexMKX/tunstrap.git tunstrap --help
 ```
 
 `pipx` (persistent install):
 
 ```bash
-pipx install git+https://github.com/AlexMKX/garuda-tunnel.git
+pipx install git+https://github.com/AlexMKX/tunstrap.git
 ```
 
 For development:
 
 ```bash
-git clone https://github.com/AlexMKX/garuda-tunnel.git && cd garuda-tunnel
+git clone https://github.com/AlexMKX/tunstrap.git && cd tunstrap
 pip install -e ".[dev]"
 ```
 
@@ -81,7 +81,7 @@ JSON=$(cat <<EOF
 EOF
 )
 
-RESULT=$(echo "$JSON" | garuda-tunnel start --session-dir "$SESSION_DIR")
+RESULT=$(echo "$JSON" | tunstrap start --session-dir "$SESSION_DIR")
 
 PORT=$(jq -r '.connections.edge1.kube_targets.k3s.local_port' <<<"$RESULT")
 TLS_NAME=$(jq -r '.connections.edge1.kube_targets.k3s.tls_server_name' <<<"$RESULT")
@@ -93,28 +93,103 @@ base64 -d <<<"$KUBECONFIG_B64" >"$KUBECONFIG_FILE"
 
 kubectl --kubeconfig="$KUBECONFIG_FILE" get nodes
 
-garuda-tunnel stop --session-dir "$SESSION_DIR"
+tunstrap stop --session-dir "$SESSION_DIR"
 rm -f "$KUBECONFIG_FILE"
 ```
 
 The `daemon.auto_stop_idle_seconds: 600` setting makes the daemon shut
 itself down after 10 minutes with no client connections. Useful for
-ephemeral CI runs that may abort before reaching `garuda-tunnel stop`.
+ephemeral CI runs that may abort before reaching `tunstrap stop`.
 Omit the field (or set to `null`) to keep the daemon alive until you call
 `stop` explicitly.
 
 ### Using `fetch_files` (generic byte fetch)
 
 ```bash
-RESULT=$(echo "$JSON" | garuda-tunnel start --session-dir "$SESSION_DIR")
+RESULT=$(echo "$JSON" | tunstrap start --session-dir "$SESSION_DIR")
 KUBECONFIG_B64=$(jq -r '.connections.edge1.fetch_files.kubeconfig.content_b64' <<<"$RESULT")
 KUBECONFIG_FILE=$(mktemp)
 base64 -d <<<"$KUBECONFIG_B64" >"$KUBECONFIG_FILE"
 # you must patch server: and determine tls-server-name yourself
 sed -i "s|server: https://127.0.0.1:6443|server: https://127.0.0.1:${PORT}|" \
     "$KUBECONFIG_FILE"
-garuda-tunnel stop --session-dir "$SESSION_DIR"
+tunstrap stop --session-dir "$SESSION_DIR"
 ```
+
+## CLI run modes (flag input, `--output env`, `run`)
+
+Besides the JSON-on-stdin interface above, a single remote host can be driven
+entirely from command-line flags — no JSON required.
+
+### Flag mode (`start USER@HOST[:PORT]`)
+
+```bash
+tunstrap start root@edge1.example.net \
+  --ssh-key ~/.ssh/id_ed25519 \
+  --target api=127.0.0.1:6443 \
+  --kube k3s=/etc/rancher/k3s/k3s.yaml
+```
+
+- `USER@HOST[:PORT]` sets the SSH user, host, and port (default `22`). IPv6
+  literals are bracketed: `root@[2001:db8::1]:6443`.
+- Repeatable `--target NAME=HOST:PORT` opens a local forward; `--kube
+  NAME=/abs/path` and `--fetch NAME=/abs/path` mirror `kube_targets` /
+  `fetch_files`.
+- Auth: `--ssh-key <file>` (optionally `--ssh-key-passphrase`) **or**
+  `--ssh-password-stdin` (the password is read from the first stdin line).
+- Daemon knobs: `--auto-stop-idle-seconds`, `--materialize`, `--log-file`,
+  `--session-dir`.
+
+> The connection host becomes the schema node key, which must match
+> `^[a-zA-Z_][a-zA-Z0-9_-]*$`. Use a hostname (e.g. `localhost`,
+> `edge1.example.net`) rather than a bare IP literal in flag mode.
+
+### `--output env` (consume via `eval`)
+
+`start` defaults to `--output json`. With `--output env` it instead prints
+POSIX `export` lines (and force-materializes kube files), ready for `eval`:
+
+```bash
+eval "$(tunstrap start root@edge1 --ssh-key ~/.ssh/id_ed25519 \
+  --target api=127.0.0.1:6443 --kube k3s=/etc/rancher/k3s/k3s.yaml --output env)"
+
+curl "http://$TUNSTRAP_API_ENDPOINT/healthz"
+kubectl get nodes          # KUBECONFIG is exported automatically
+
+tunstrap stop --session-dir "$TUNSTRAP_SESSION_DIR"
+```
+
+Variables emitted (no node segment; names upper-cased, non-alphanumerics → `_`):
+
+| Variable | Meaning |
+|---|---|
+| `TUNSTRAP_SESSION_DIR` | Session dir — pass to `stop --session-dir`. |
+| `TUNSTRAP_PID` | Daemon PID. |
+| `TUNSTRAP_<NAME>_PORT` | Local forwarded port for `--target NAME=...`. |
+| `TUNSTRAP_<NAME>_ENDPOINT` | `127.0.0.1:<port>` for a target; full URL for a kube target. |
+| `TUNSTRAP_<NAME>_KUBECONFIG` | Materialized kubeconfig path for `--kube NAME=...`. |
+| `KUBECONFIG` | Colon-joined paths of all kube targets. |
+
+### `run` (foreground wrapper with guaranteed teardown)
+
+`run` opens the tunnel, injects the same `TUNSTRAP_*` / `KUBECONFIG`
+environment into a child command, waits for it, and then **always** tears the
+tunnel down (even if the child crashes or fails to launch):
+
+```bash
+tunstrap run root@edge1 \
+  --ssh-key ~/.ssh/id_ed25519 \
+  --kube k3s=/etc/rancher/k3s/k3s.yaml \
+  -- helm list
+```
+
+Everything after `--` is the child command and its arguments. `SIGINT` /
+`SIGTERM` are forwarded to the child.
+
+**Exit codes (`run`):** the child's exit code wins on success. Before the
+child runs, `run` may exit with `2` (required tunnel failure), `3` (a live
+session already holds the requested `--session-dir`), or `4` (daemon error);
+`127` if the child binary cannot be launched.
 
 ## Input reference (`InputSchema`)
 
@@ -261,7 +336,7 @@ explicit `tls_server_name` is set:
   },
   "pid": 12345,
   "token": "<opaque>",
-  "session_dir": "/tmp/garuda-session-abc123",
+  "session_dir": "/tmp/tunstrap-session-abc123",
   "started_at": "2026-05-30T10:00:00Z",
   "warnings": []
 }
@@ -402,14 +477,14 @@ The legacy `stop --pid <pid> --token <token>` interface is gone. The only stop
 interface is now `stop --session-dir <path>`.
 
 ```diff
-- RESULT=$(echo "$JSON" | garuda-tunnel start)
+- RESULT=$(echo "$JSON" | tunstrap start)
 - PID=$(jq -r '.pid' <<<"$RESULT")
 - TOKEN=$(jq -r '.token' <<<"$RESULT")
-- garuda-tunnel stop --pid "$PID" --token "$TOKEN"
+- tunstrap stop --pid "$PID" --token "$TOKEN"
 
 + SESSION_DIR=$(mktemp -d)
-+ RESULT=$(echo "$JSON" | garuda-tunnel start --session-dir "$SESSION_DIR")
-+ garuda-tunnel stop --session-dir "$SESSION_DIR"
++ RESULT=$(echo "$JSON" | tunstrap start --session-dir "$SESSION_DIR")
++ tunstrap stop --session-dir "$SESSION_DIR"
 ```
 
 `--session-dir` is optional on `start` (a temporary dir is generated if
@@ -417,10 +492,10 @@ omitted), but `session_dir` is **always** present in the output JSON. The
 simplest migration is to capture and reuse it:
 
 ```bash
-RESULT=$(echo "$JSON" | garuda-tunnel start)
+RESULT=$(echo "$JSON" | tunstrap start)
 SESSION_DIR=$(jq -r '.session_dir' <<<"$RESULT")
 # ... do work ...
-garuda-tunnel stop --session-dir "$SESSION_DIR"
+tunstrap stop --session-dir "$SESSION_DIR"
 ```
 
 ## Running tests
@@ -442,7 +517,7 @@ pytest tests/integration -m integration
 
 - Kube-targets design: `docs/specs/2026-05-30-kube-targets-design.md`
 - Fetch-files design: `docs/specs/2026-05-20-feature-fetch-files-design.md`
-- Original design (historical): `docs/specs/2026-05-16-garuda-tunnel-design.md`
+- Original design (historical): `docs/specs/2026-05-16-tunstrap-design.md`
 
 ## License
 

@@ -14,7 +14,7 @@ from typing import Final
 
 import asyncssh
 
-from garuda_tunnel.schemas import FetchedFile, FileSpec
+from tunstrap.schemas import FetchedFile, FileSpec
 
 # Exceptions we expect from a live SSH/SFTP session. Anything outside this
 # tuple is a programmer error and must bubble up — never silently turned

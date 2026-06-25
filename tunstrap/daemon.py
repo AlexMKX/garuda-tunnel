@@ -2,50 +2,14 @@
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
-import secrets
 import subprocess
 import sys
 from typing import IO, Any
 
-from garuda_tunnel.exceptions import DaemonError
-from garuda_tunnel.identity import _state_dir
-from garuda_tunnel.schemas import InputSchema
-
-
-def _sweep_stale_lockfiles() -> None:
-    """Remove lock files whose flock no one holds. Best-effort; ignores errors.
-
-    Race-safe against concurrent daemons: a live daemon holds an exclusive
-    flock, so LOCK_NB fails for it and we skip its file. Only files where
-    no one holds the lock are unlinked.
-    """
-    state = _state_dir()
-    try:
-        candidates = list(state.glob("*.lock"))
-    except OSError:
-        return
-    for path in candidates:
-        try:
-            fd = os.open(path, os.O_RDONLY)
-        except OSError:
-            continue
-        try:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                # Held by a live daemon — leave it.
-                continue
-            # Got it — file is stale. Release and unlink.
-            fcntl.flock(fd, fcntl.LOCK_UN)
-            try:
-                path.unlink()
-            except OSError:
-                pass
-        finally:
-            os.close(fd)
+from tunstrap.exceptions import DaemonError
+from tunstrap.schemas import InputSchema
 
 
 def _open_log_target(path: str | None) -> int | IO[bytes]:
@@ -71,9 +35,6 @@ def spawn_daemon(schema: InputSchema, session_dir: str | None = None) -> dict[st
     Raises ``DaemonError`` only when the parent itself cannot complete the
     handshake (empty pipe, malformed JSON, unknown kind).
     """
-    _sweep_stale_lockfiles()
-    runtime_token = secrets.token_urlsafe(32)
-
     ipc_read_fd, ipc_write_fd = os.pipe()
     log_target = _open_log_target(schema.daemon.log_file)
     try:
@@ -81,9 +42,8 @@ def spawn_daemon(schema: InputSchema, session_dir: str | None = None) -> dict[st
             [
                 sys.executable,
                 "-m",
-                "garuda_tunnel._worker",
+                "tunstrap._worker",
                 f"--ipc-fd={ipc_write_fd}",
-                f"--token={runtime_token}",
                 *([f"--session-dir={session_dir}"] if session_dir is not None else []),
             ],
             stdin=subprocess.PIPE,
@@ -131,6 +91,6 @@ def _read_ipc_response(read_fd: int) -> dict[str, Any]:
         raise DaemonError("worker IPC produced invalid JSON", {"position": exc.pos}) from exc
 
     kind = message.get("kind")
-    if kind in {"success", "required_failure", "daemon_error"}:
+    if kind in {"success", "required_failure", "daemon_error", "session_active"}:
         return message
     raise DaemonError("unexpected IPC message kind", {"kind": str(kind)})

@@ -3,7 +3,7 @@
 Validates: KubeconfigView extracts server/CA/cert/key for the current
 context; multi-context files yield an ignored-contexts warning; a
 malformed kubeconfig raises KubeParseError.
-Code: garuda_tunnel/kube.py
+Code: tunstrap/kube.py
 Assertion: extracted fields match the fixtures; warnings list names the
 ignored contexts; bad YAML raises KubeParseError (not a bare YAMLError).
 Method: load fixtures from tests/unit/fixtures/kube and call parse_kubeconfig.
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from garuda_tunnel.kube import KubeParseError, parse_kubeconfig
+from tunstrap.kube import KubeParseError, parse_kubeconfig
 
 pytestmark = pytest.mark.unit
 

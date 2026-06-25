@@ -1,9 +1,9 @@
-# garuda-tunnel: asyncssh + fetch_files + remote_targets + identity lockfile + subprocess IPC
+# tunstrap: asyncssh + fetch_files + remote_targets + identity lockfile + subprocess IPC
 
 **Status:** final (state as merged in this PR)
-**Repository:** https://github.com/AlexMKX/garuda-tunnel
+**Repository:** https://github.com/AlexMKX/tunstrap
 **Branch (this PR):** `feature/fetch-files`
-**Supersedes:** the `sshtunnel`/`paramiko` transport, the `connections[node]: list[ConnectionEntry]` output, the `InputSchema.require` global selector, the `remote_ports`/`local_ports` input fields, the `/proc/<pid>/environ`-based identity check, and the hand-rolled `fork+setsid+execve` daemonization that preceded this work in `2026-05-16-garuda-tunnel-design.md`.
+**Supersedes:** the `sshtunnel`/`paramiko` transport, the `connections[node]: list[ConnectionEntry]` output, the `InputSchema.require` global selector, the `remote_ports`/`local_ports` input fields, the `/proc/<pid>/environ`-based identity check, and the hand-rolled `fork+setsid+execve` daemonization that preceded this work in `2026-05-16-tunstrap-design.md`.
 
 ## 1. Goal
 
@@ -13,7 +13,7 @@ A single coordinated release that ships:
 2. `fetch_files` feature — read small remote files over the same SSH session as the tunnel.
 3. `remote_targets` schema — handle-keyed `dict[str, "host:port"]` replacing positional `remote_ports`/`local_ports`. Enables bastion-style cross-host forwards.
 4. Per-node `required: bool` replacing the global `InputSchema.require` selector.
-5. `fcntl.flock`-based identity check on `~/.local/state/garuda-tunnel/<token>.lock` replacing `/proc/<pid>/environ` parsing.
+5. `fcntl.flock`-based identity check on `~/.local/state/tunstrap/<token>.lock` replacing `/proc/<pid>/environ` parsing.
 6. `subprocess.Popen(start_new_session=True, pass_fds=[...])` IPC replacing hand-rolled `os.fork()` + `os.setsid()` + second `os.fork()` + `os.execve()`.
 7. User-facing README rewrite.
 8. Toolchain: `black`, `pylint`, `vulture`, `mypy --strict`, combined unit + integration coverage gate at 80%.
@@ -30,7 +30,7 @@ These eight items ship together because they all touch the public input/output c
 
 ## 3. Non-goals
 
-- Async public CLI: `garuda-tunnel start | stop | status` stays synchronous from the caller's perspective.
+- Async public CLI: `tunstrap start | stop | status` stays synchronous from the caller's perspective.
 - Control-plane Unix socket. `stop` and `status` keep the existing pid + token over signal model.
 - Host-key pinning. `known_hosts=None` matches the prior `sshtunnel` behavior; pinning is a separate spec.
 - Per-target `required` flag. Node-level `required` still gates the whole node.
@@ -216,7 +216,7 @@ Or, on schema validation failure:
 
 ### 5.1 Transport: `asyncssh` per node
 
-`garuda_tunnel/ssh.py`:
+`tunstrap/ssh.py`:
 
 - `async def open_connection(node: NodeInput) -> asyncssh.SSHClientConnection`
   - `asyncssh.connect(host=node.host, port=node.port, username=node.user, known_hosts=None, client_keys=..., password=..., connect_timeout=node.ssh_options.connect_timeout, keepalive_interval=30)`.
@@ -233,7 +233,7 @@ Or, on schema validation failure:
 
 ### 5.2 Manager: async lifecycle
 
-`garuda_tunnel/manager.py`:
+`tunstrap/manager.py`:
 
 - `TunnelManager(schema)` exposes:
   - `async def start_all_and_build_output(*, pid, token) -> OutputSchema | ErrorOutput`
@@ -251,7 +251,7 @@ Or, on schema validation failure:
 
 ### 5.3 Fetcher: `asyncssh.SFTPClient`
 
-`garuda_tunnel/fetcher.py`:
+`tunstrap/fetcher.py`:
 
 - `_MAX_FETCH_BYTES: Final[int] = 1 << 20` (1 MiB, private module constant).
 - `async def fetch_files(conn, specs) -> tuple[dict[str, FetchedFile], list[str]]`
@@ -268,7 +268,7 @@ Or, on schema validation failure:
 
 ### 5.4 Daemon: `subprocess.Popen` + dedicated IPC fd
 
-`garuda_tunnel/daemon.py`:
+`tunstrap/daemon.py`:
 
 ```python
 def spawn_daemon(schema: InputSchema) -> dict[str, Any]:
@@ -279,7 +279,7 @@ def spawn_daemon(schema: InputSchema) -> dict[str, Any]:
     try:
         proc = subprocess.Popen(
             [
-                sys.executable, "-m", "garuda_tunnel._worker",
+                sys.executable, "-m", "tunstrap._worker",
                 f"--ipc-fd={ipc_write_fd}",
                 f"--token={runtime_token}",
             ],
@@ -314,7 +314,7 @@ Key properties:
 
 ### 5.5 Worker: stdin schema + identity lock
 
-`garuda_tunnel/_worker.py`:
+`tunstrap/_worker.py`:
 
 ```python
 def main(argv=None):
@@ -372,7 +372,7 @@ async def _run(args, lock_fd):
 
 ### 5.6 Identity: `fcntl.flock` on `<state_dir>/<token>.lock`
 
-`garuda_tunnel/identity.py`:
+`tunstrap/identity.py`:
 
 ```python
 def verify_token(pid: int, token: str) -> IdentityCheckResult:
@@ -399,7 +399,7 @@ def verify_token(pid: int, token: str) -> IdentityCheckResult:
         os.close(fd)
 ```
 
-- State directory: `${XDG_STATE_HOME:-~/.local/state}/garuda-tunnel/`, mode `0o700`.
+- State directory: `${XDG_STATE_HOME:-~/.local/state}/tunstrap/`, mode `0o700`.
 - Lock file: `<token>.lock`, mode `0o600`, content is daemon's PID as decimal text (diagnostic only; the authority is "holds the flock").
 - Daemon (worker) acquires `LOCK_EX | LOCK_NB` at startup and keeps the fd open for its lifetime. The kernel releases the flock automatically on process exit, clean or not.
 - On graceful shutdown (`SIGTERM`/`SIGINT` handler in `_run`), the worker also `unlink`s the file and closes the fd.
@@ -408,7 +408,7 @@ This replaces the previous environ-based check that parsed `/proc/<pid>/environ`
 
 ### 5.7 Schemas
 
-`garuda_tunnel/schemas.py`:
+`tunstrap/schemas.py`:
 
 - `RemoteTarget(BaseModel)` with `host: str (1..255)`, `port: int (ge=1, le=65535)`, `extra=forbid`.
 - `NodeInput.remote_targets: dict[str, RemoteTarget]` — a `mode="before"` field validator parses each `"host:port"` string via `_parse_host_port(value)` (or accepts an already-parsed `RemoteTarget`, or a dict for `model_dump` round-trip) and replaces the value with a `RemoteTarget`. Enforces 1..16 entries and handle regex.
@@ -438,7 +438,7 @@ This replaces the previous environ-based check that parsed `/proc/<pid>/environ`
 
 Docker compose topology (`tests/integration/docker-compose.yml`):
 
-- `sshd-a`, `sshd-b`, `sshd-c` — three SSH servers on the default compose network with `/tmp/garuda-tunnel-it/` bind-mounted at `/srv/files`.
+- `sshd-a`, `sshd-b`, `sshd-c` — three SSH servers on the default compose network with `/tmp/tunstrap-it/` bind-mounted at `/srv/files`.
 - `sshd-bastion` — SSH server attached to a separate `internal` network with `AllowTcpForwarding yes` enabled via a drop-in `sshd_config` snippet. Exposed on the host.
 - `http-target-1`, `http-target-2` — `python:3.12-alpine` containers running a `ThreadingHTTPServer` that returns a unique `IDENTITY` env var on `GET /`. Attached only to `internal`; not reachable from the host directly.
 
@@ -456,9 +456,9 @@ Scenarios:
 - `.venv/bin/black --check .`
 - `.venv/bin/ruff format --check .`
 - `.venv/bin/ruff check .`
-- `.venv/bin/pylint garuda_tunnel/` → 10.00/10.
-- `.venv/bin/vulture garuda_tunnel/ vulture_whitelist.py`
-- `.venv/bin/mypy --strict garuda_tunnel/`
+- `.venv/bin/pylint tunstrap/` → 10.00/10.
+- `.venv/bin/vulture tunstrap/ vulture_whitelist.py`
+- `.venv/bin/mypy --strict tunstrap/`
 - Combined coverage via subprocess instrumentation (`sitecustomize.py` + `COVERAGE_PROCESS_START`): unit + integration combine → `coverage report --fail-under=80`. Current: 87%.
 
 ## 7. README
@@ -473,7 +473,7 @@ Sections in order: Title + tagline → Why this exists → Install (`pipx run --
 2. Input: `remote_ports: list[int]` (+ optional `local_ports: list[int]`) → `remote_targets: dict[str, "host:port"]`.
 3. Input: `ssh_options.host_key_policy`, `ssh_options.known_hosts_path`, `ssh_options.threaded` removed (unused after the asyncssh migration; `extra=forbid` rejects them).
 4. Output: `connections[node]: list[ConnectionEntry]` → `NodeOutput{ports: dict[str,int], fetch_files: dict[str, FetchedFile]}`.
-5. Internal: `GARUDA_TUNNEL_TOKEN` env var is gone (replaced by lockfile-based identity). User-visible only insofar as `ps eww <daemon_pid>` no longer exposes the token.
+5. Internal: `TUNSTRAP_TOKEN` env var is gone (replaced by lockfile-based identity). User-visible only insofar as `ps eww <daemon_pid>` no longer exposes the token.
 
 The README "Migration" section gives concrete `jq` diff snippets for each.
 
@@ -531,7 +531,7 @@ Considered:
 ### 9.7 Identity check: `fcntl.flock` vs alternatives
 
 Considered:
-- **A (chosen):** PID file + `fcntl.flock` on `~/.local/state/garuda-tunnel/<token>.lock`. Atomic, race-free, no `/proc` parsing, no environ leak. POSIX-only (Windows out of scope).
+- **A (chosen):** PID file + `fcntl.flock` on `~/.local/state/tunstrap/<token>.lock`. Atomic, race-free, no `/proc` parsing, no environ leak. POSIX-only (Windows out of scope).
 - B: Unix domain socket — daemon listens on `<token>.sock`; client connects + sends commands. Reframes the IPC entirely; not needed for the verification problem alone.
 - C: `psutil` + environ — keeps the same race and same secrets-leak via `ps`. Adds a dependency for no improvement.
 - D: keep environ parsing, add retry — fights the symptom not the cause.
@@ -540,7 +540,7 @@ Considered:
 
 Considered:
 - **A (chosen):** worker argv `--token=<value>`. Equals form is critical: `["--token", value]` form lets argparse misinterpret a leading-`-` value as a flag (`secrets.token_urlsafe` returns base64url which starts with `-` ~1.7 % of the time). `--key=value` form is never split.
-- B: env var `GARUDA_TUNNEL_TOKEN` (old approach) — leaks token to `ps eww`.
+- B: env var `TUNSTRAP_TOKEN` (old approach) — leaks token to `ps eww`.
 - C: dedicated pipe — adds another fd to inherit; the flock authority is the actual capability now, so the token in argv is just an opaque file-name lookup. argv is fine.
 
 ### 9.9 IPC mechanism
@@ -562,7 +562,7 @@ Considered:
 
 Considered:
 - **A (chosen):** opportunistic sweep at the top of `spawn_daemon`. Tries `LOCK_NB` on every `*.lock`; unlinks any file that acquires (no live holder). Race-safe against concurrent daemons by construction.
-- B: separate `garuda-tunnel gc` command — extra surface; the sweep at start is sufficient for the disposable-CI workload.
+- B: separate `tunstrap gc` command — extra surface; the sweep at start is sufficient for the disposable-CI workload.
 - C: cron / systemd timer — wrong layer; this is an application concern.
 
 ## 10. Constraints and invariants
@@ -578,7 +578,7 @@ Considered:
 
 ## 11. References
 
-- Original tunnel spec: `docs/specs/2026-05-16-garuda-tunnel-design.md` (historical).
+- Original tunnel spec: `docs/specs/2026-05-16-tunstrap-design.md` (historical).
 - asyncssh API: <https://asyncssh.readthedocs.io/en/stable/api.html>
 - POSIX `flock`: `man 2 flock`
 - `subprocess.Popen(start_new_session=...)`: <https://docs.python.org/3/library/subprocess.html#subprocess.Popen>

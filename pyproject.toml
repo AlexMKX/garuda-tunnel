@@ -1,5 +1,5 @@
 [project]
-name = "garuda-tunnel"
+name = "tunstrap"
 description = "SSH tunnel manager for ephemeral environments"
 authors = [{name = "Alex MKX"}]
 license = {text = "MIT"}
@@ -27,11 +27,11 @@ dev = [
 ]
 
 [project.scripts]
-garuda-tunnel = "garuda_tunnel.cli:main"
+tunstrap = "tunstrap.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/AlexMKX/garuda-tunnel"
-Issues   = "https://github.com/AlexMKX/garuda-tunnel/issues"
+Homepage = "https://github.com/AlexMKX/tunstrap"
+Issues   = "https://github.com/AlexMKX/tunstrap/issues"
 
 [build-system]
 requires      = ["hatchling", "hatch-vcs"]
@@ -41,7 +41,7 @@ build-backend = "hatchling.build"
 source = "vcs"
 
 [tool.hatch.build.hooks.vcs]
-version-file = "garuda_tunnel/_version.py"
+version-file = "tunstrap/_version.py"
 
 [tool.hatch.metadata]
 # Required because `asyncssh` is pinned to a VCS URL (our fork carrying
@@ -82,40 +82,40 @@ asyncio_mode = "auto"
 # writes its own .coverage.<pid>.<rand> file; `coverage combine` then
 # merges unit + integration measurements before the gate is evaluated.
 parallel = true
-source = ["garuda_tunnel"]
+source = ["tunstrap"]
 # _worker.py is omitted because `daemon.py::spawn_daemon` re-execs the
 # Python interpreter via os.execve before the worker module runs, which
 # bypasses the coverage atexit hook. The worker is functionally covered
 # by the integration suite (the daemon would not start otherwise), but
 # the measurement cannot be attributed.
 omit = [
-    "*/garuda_tunnel/__main__.py",
-    "*/garuda_tunnel/_version.py",
-    "*/garuda_tunnel/_worker.py",
-    "garuda_tunnel/__main__.py",
-    "garuda_tunnel/_version.py",
-    "garuda_tunnel/_worker.py",
+    "*/tunstrap/__main__.py",
+    "*/tunstrap/_version.py",
+    "*/tunstrap/_worker.py",
+    "tunstrap/__main__.py",
+    "tunstrap/_version.py",
+    "tunstrap/_worker.py",
 ]
 
 [tool.coverage.paths]
 # Map editable-install and CI checkout paths to the same logical source so
 # `coverage combine` sees a single set of files.
 source = [
-    "garuda_tunnel",
-    "*/garuda_tunnel",
-    "*/site-packages/garuda_tunnel",
+    "tunstrap",
+    "*/tunstrap",
+    "*/site-packages/tunstrap",
 ]
 
 [tool.coverage.report]
 # Mirror [tool.coverage.run].omit so the report excludes the same set of
 # files regardless of which step produces the data.
 omit = [
-    "*/garuda_tunnel/__main__.py",
-    "*/garuda_tunnel/_version.py",
-    "*/garuda_tunnel/_worker.py",
-    "garuda_tunnel/__main__.py",
-    "garuda_tunnel/_version.py",
-    "garuda_tunnel/_worker.py",
+    "*/tunstrap/__main__.py",
+    "*/tunstrap/_version.py",
+    "*/tunstrap/_worker.py",
+    "tunstrap/__main__.py",
+    "tunstrap/_version.py",
+    "tunstrap/_worker.py",
 ]
 
 [tool.black]
@@ -143,7 +143,7 @@ disable = [
 max-line-length = 100
 
 [tool.vulture]
-paths = ["garuda_tunnel", "vulture_whitelist.py"]
+paths = ["tunstrap", "vulture_whitelist.py"]
 min_confidence = 80
 ignore_decorators = ["@pytest.fixture", "@field_validator*", "@model_validator*", "@classmethod"]
 ignore_names = ["cls"]

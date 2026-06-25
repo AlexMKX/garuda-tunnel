@@ -16,8 +16,8 @@ HERE = Path(__file__).resolve().parent
 
 
 @pytest.fixture(scope="session")
-def started_daemons() -> list[tuple[int, str]]:
-    """Mutable list of (pid, token) pairs produced by successful start calls."""
+def started_daemons() -> list[str]:
+    """Mutable list of session_dir strings produced by successful start calls."""
     return []
 
 
@@ -58,15 +58,15 @@ def ssh_keypair() -> tuple[str, str]:
 
 
 @pytest.fixture(scope="session")
-def garuda_tunnel_it_dir() -> Path:
-    """Create /tmp/garuda-tunnel-it/ with mode 0o1777 before any docker mount.
+def tunstrap_it_dir() -> Path:
+    """Create /tmp/tunstrap-it/ with mode 0o1777 before any docker mount.
 
     Docker bind-mount on a missing host path creates it as root:0o755, which
     then prevents the in-runner test process from writing fixture files.
     Pre-creating the directory with sticky world-writable mode is the same
     pattern /tmp itself uses and works on every Linux runner.
     """
-    root = Path("/tmp/garuda-tunnel-it")
+    root = Path("/tmp/tunstrap-it")
     root.mkdir(parents=True, exist_ok=True)
     os.chmod(root, 0o1777)
     return root
@@ -75,9 +75,9 @@ def garuda_tunnel_it_dir() -> Path:
 @pytest.fixture(scope="session")
 def ssh_test_cluster(
     ssh_keypair: tuple[str, str],
-    garuda_tunnel_it_dir: Path,
+    tunstrap_it_dir: Path,
 ) -> Iterator[dict[str, Any]]:
-    del garuda_tunnel_it_dir  # forces ordering only
+    del tunstrap_it_dir  # forces ordering only
     if sys.platform != "linux":
         pytest.skip("integration tests require Linux + Docker")
     compose_file = HERE / "docker-compose.yml"
@@ -153,9 +153,9 @@ def ssh_test_cluster(
 
 
 @pytest.fixture(scope="session")
-def prepared_files(garuda_tunnel_it_dir: Path) -> dict[str, Path]:
-    """Populate /tmp/garuda-tunnel-it/ with fixtures bind-mounted into sshd containers."""
-    root = garuda_tunnel_it_dir
+def prepared_files(tunstrap_it_dir: Path) -> dict[str, Path]:
+    """Populate /tmp/tunstrap-it/ with fixtures bind-mounted into sshd containers."""
+    root = tunstrap_it_dir
 
     kubeconfig = root / "kubeconfig"
     kubeconfig.write_text(
@@ -239,9 +239,9 @@ def prepared_files(garuda_tunnel_it_dir: Path) -> dict[str, Path]:
     }
 
 
-def garuda_tunnel_start(stdin_payload: dict[str, Any]) -> dict[str, Any]:
+def tunstrap_start(stdin_payload: dict[str, Any]) -> dict[str, Any]:
     completed = subprocess.run(
-        ["garuda-tunnel", "start"],
+        ["tunstrap", "start"],
         input=json.dumps(stdin_payload),
         text=True,
         capture_output=True,

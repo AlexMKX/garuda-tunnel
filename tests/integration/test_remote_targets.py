@@ -4,7 +4,7 @@ Validates: a tunnel into sshd-bastion can forward to http-target-1 / http-target
 which are unreachable from the host directly. Each target serves a unique
 identity string over HTTP; the test verifies that the forward delivered the
 request to the correct container.
-Code: garuda_tunnel/ssh.py::open_local_forwards (RemoteTarget host:port path).
+Code: tunstrap/ssh.py::open_local_forwards (RemoteTarget host:port path).
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from tests.integration.conftest import garuda_tunnel_start
+from tests.integration.conftest import tunstrap_start
 
 
 pytestmark = pytest.mark.integration
@@ -30,7 +30,7 @@ def _http_get(local_port: int, timeout: float = 5.0) -> bytes:
 
 def test_forward_into_internal_network_identifies_target(
     ssh_test_cluster: dict[str, Any],
-    started_daemons: list[tuple[int, str]],
+    started_daemons: list[str],
 ) -> None:
     """Each handle reaches its named target; HTTP body proves the route."""
     payload = {
@@ -47,7 +47,7 @@ def test_forward_into_internal_network_identifies_target(
             }
         }
     }
-    outcome = garuda_tunnel_start(payload)
+    outcome = tunstrap_start(payload)
     assert outcome["returncode"] == 0, outcome["stderr"]
     body = outcome["json"]
     ports = body["connections"]["edge"]["ports"]
@@ -56,12 +56,12 @@ def test_forward_into_internal_network_identifies_target(
     assert _http_get(ports["echo1"]) == b"target-1"
     assert _http_get(ports["echo2"]) == b"target-2"
 
-    started_daemons.append((body["pid"], body["token"]))
+    started_daemons.append(body["session_dir"])
 
 
 def test_multiple_sequential_requests_through_same_forward(
     ssh_test_cluster: dict[str, Any],
-    started_daemons: list[tuple[int, str]],
+    started_daemons: list[str],
 ) -> None:
     """A single forward serves multiple sequential HTTP requests."""
     payload = {
@@ -75,7 +75,7 @@ def test_multiple_sequential_requests_through_same_forward(
             }
         }
     }
-    outcome = garuda_tunnel_start(payload)
+    outcome = tunstrap_start(payload)
     assert outcome["returncode"] == 0, outcome["stderr"]
     body = outcome["json"]
     local_port = body["connections"]["edge"]["ports"]["echo"]
@@ -84,12 +84,12 @@ def test_multiple_sequential_requests_through_same_forward(
     for _ in range(5):
         assert _http_get(local_port) == b"target-1"
 
-    started_daemons.append((body["pid"], body["token"]))
+    started_daemons.append(body["session_dir"])
 
 
 def test_request_through_tunnel_to_unreachable_target_fails(
     ssh_test_cluster: dict[str, Any],
-    started_daemons: list[tuple[int, str]],
+    started_daemons: list[str],
 ) -> None:
     """`start` succeeds; the HTTP request through the unreachable forward errors out.
 
@@ -109,7 +109,7 @@ def test_request_through_tunnel_to_unreachable_target_fails(
             }
         }
     }
-    outcome = garuda_tunnel_start(payload)
+    outcome = tunstrap_start(payload)
     # Start succeeds because the local listener binds without contacting remote.
     assert outcome["returncode"] == 0, outcome["stderr"]
     body = outcome["json"]
@@ -122,4 +122,4 @@ def test_request_through_tunnel_to_unreachable_target_fails(
     with pytest.raises((urllib.error.URLError, ConnectionError, OSError)):
         _http_get(local_port, timeout=10.0)
 
-    started_daemons.append((body["pid"], body["token"]))
+    started_daemons.append(body["session_dir"])

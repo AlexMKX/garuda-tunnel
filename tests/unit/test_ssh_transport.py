@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, MagicMock
 import asyncssh
 import pytest
 
-from garuda_tunnel.exceptions import TunnelStartupError
-from garuda_tunnel.schemas import InputSchema
-from garuda_tunnel.ssh import open_local_forwards
+from tunstrap.exceptions import TunnelStartupError
+from tunstrap.schemas import InputSchema
+from tunstrap.ssh import open_local_forwards
 
 pytestmark = pytest.mark.unit
 
@@ -57,7 +57,7 @@ async def test_forward_called_with_target_host_and_port(
     node = schema.nodes["a"]
     conn = MagicMock()
     conn.forward_local_port = AsyncMock(side_effect=[_fake_listener(54321), _fake_listener(54322)])
-    monkeypatch.setattr("garuda_tunnel.ssh._probe_local_port", lambda *_args, **_kw: True)
+    monkeypatch.setattr("tunstrap.ssh._probe_local_port", lambda *_args, **_kw: True)
 
     ports, listeners = await open_local_forwards(conn, node)
 
@@ -80,7 +80,7 @@ async def test_probe_failure_raises_tunnel_startup_error(
     node = schema.nodes["a"]
     conn = MagicMock()
     conn.forward_local_port = AsyncMock(return_value=_fake_listener(54321))
-    monkeypatch.setattr("garuda_tunnel.ssh._probe_local_port", lambda *_args, **_kw: False)
+    monkeypatch.setattr("tunstrap.ssh._probe_local_port", lambda *_args, **_kw: False)
 
     with pytest.raises(TunnelStartupError) as exc:
         await open_local_forwards(conn, node)
@@ -113,7 +113,7 @@ async def test_forward_failure_cleans_up_previous_listeners(
     conn.forward_local_port = AsyncMock(
         side_effect=[first, asyncssh.ChannelOpenError(1, "no route")]
     )
-    monkeypatch.setattr("garuda_tunnel.ssh._probe_local_port", lambda *_args, **_kw: True)
+    monkeypatch.setattr("tunstrap.ssh._probe_local_port", lambda *_args, **_kw: True)
 
     with pytest.raises(asyncssh.ChannelOpenError):
         await open_local_forwards(conn, node)
@@ -145,7 +145,7 @@ async def test_forward_local_port_receives_tracker_factory(
 
     conn = MagicMock()
     conn.forward_local_port = AsyncMock(side_effect=fake_forward_local_port)
-    monkeypatch.setattr("garuda_tunnel.ssh._probe_local_port", lambda *_args, **_kw: True)
+    monkeypatch.setattr("tunstrap.ssh._probe_local_port", lambda *_args, **_kw: True)
 
     sentinel = object()
     await open_local_forwards(conn, node, tracker_factory=sentinel)

@@ -25,7 +25,7 @@ htmlcov/
 .ruff_cache/
 
 # Generated version file (hatch-vcs)
-garuda_tunnel/_version.py
+tunstrap/_version.py
 
 # OS
 .DS_Store

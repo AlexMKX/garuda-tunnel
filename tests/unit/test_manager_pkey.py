@@ -1,9 +1,9 @@
 """SSH private-key loading.
 
-Validates: garuda_tunnel/ssh.py::_load_client_keys accepts the
+Validates: tunstrap/ssh.py::_load_client_keys accepts the
 supported PEM key types, returns None when no key is configured, and
 raises asyncssh.KeyImportError on garbage input.
-Code: garuda_tunnel/ssh.py
+Code: tunstrap/ssh.py
 """
 
 from __future__ import annotations
@@ -11,8 +11,8 @@ from __future__ import annotations
 import asyncssh
 import pytest
 
-from garuda_tunnel.schemas import InputSchema
-from garuda_tunnel.ssh import _load_client_keys
+from tunstrap.schemas import InputSchema
+from tunstrap.ssh import _load_client_keys
 from tests.unit.conftest import make_node
 
 pytestmark = pytest.mark.unit

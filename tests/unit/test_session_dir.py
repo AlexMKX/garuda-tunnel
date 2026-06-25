@@ -3,7 +3,7 @@
 Validates: a generated dir is removed wholesale; a supplied dir keeps
 only tunnel-data removed; tunnel-data is 0700; an existing/symlinked
 tunnel-data is rejected.
-Code: garuda_tunnel/session.py
+Code: tunstrap/session.py
 Assertion: directory existence/mode after open/cleanup matches the rules;
 SessionError is raised on a hostile tunnel-data.
 Method: drive SessionDir against tmp_path with crafted preconditions.
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from garuda_tunnel.session import SessionDir, SessionError
+from tunstrap.session import SessionDir, SessionError
 
 pytestmark = pytest.mark.unit
 
@@ -49,12 +49,20 @@ def test_tunnel_data_is_0700(tmp_path: Path) -> None:
     assert mode == 0o700
 
 
-def test_rejects_existing_tunnel_data(tmp_path: Path) -> None:
-    """A pre-existing tunnel-data in a supplied dir is rejected (orphan/foreign)."""
+def test_reclaims_existing_tunnel_data(tmp_path: Path) -> None:
+    """A pre-existing owned tunnel-data (orphan) is wiped and recreated fresh.
+
+    With the single session.lock held exclusively, any leftover tunnel-data
+    belongs to a dead session and is safe to reclaim.
+    """
     supplied = tmp_path / "work"
-    (supplied / "tunnel-data").mkdir(parents=True)
-    with pytest.raises(SessionError):
-        SessionDir.create(supplied=str(supplied), base=tmp_path)
+    data = supplied / "tunnel-data"
+    data.mkdir(parents=True)
+    (data / "leftover").write_text("stale\n")
+    sd = SessionDir.create(supplied=str(supplied), base=tmp_path)
+    assert (supplied / "tunnel-data").is_dir()
+    assert not (supplied / "tunnel-data" / "leftover").exists()
+    sd.cleanup()
 
 
 def test_rejects_symlink_tunnel_data(tmp_path: Path) -> None:
@@ -71,11 +79,10 @@ def test_rejects_symlink_tunnel_data(tmp_path: Path) -> None:
 def test_write_identity_and_materialize(tmp_path: Path) -> None:
     """Identity files and a materialized file land in tunnel-data, mode 0600."""
     sd = SessionDir.create(supplied=None, base=tmp_path)
-    sd.write_identity(pid=4321, token="tok")
+    sd.write_identity(pid=4321)
     path = sd.materialize("hub-k3s", b"kubeconfig-bytes")
     data_dir = Path(sd.session_dir) / "tunnel-data"
     assert (data_dir / "daemon.pid").read_text().strip() == "4321"
-    assert (data_dir / "token").read_text().strip() == "tok"
     assert Path(path).read_bytes() == b"kubeconfig-bytes"
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
 

@@ -3,7 +3,7 @@
 Validates: only the current-context cluster's server is rewritten;
 tls-server-name is set; comments/key order are preserved; insecure mode
 drops CA and sets insecure-skip-tls-verify.
-Code: garuda_tunnel/kube.py
+Code: tunstrap/kube.py
 Assertion: re-parsing the patched output shows the new server/tls fields;
 the original comment line survives; untouched clusters keep their server.
 Method: parse a fixture, patch it, dump, and re-parse to assert.
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from garuda_tunnel.kube import dump_kubeconfig, parse_kubeconfig, patch_view
+from tunstrap.kube import dump_kubeconfig, parse_kubeconfig, patch_view
 
 pytestmark = pytest.mark.unit
 

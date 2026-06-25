@@ -29,12 +29,12 @@ jobs:
         run: ruff check .
       - name: pylint
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
-        run: pylint garuda_tunnel/
+        run: pylint tunstrap/
       - name: vulture
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
-        run: vulture garuda_tunnel/ vulture_whitelist.py
+        run: vulture tunstrap/ vulture_whitelist.py
       - name: mypy --strict
-        run: mypy --strict garuda_tunnel
+        run: mypy --strict tunstrap
       - name: pytest (unit)
         # Coverage is recorded only on Linux 3.13; the rest of the matrix
         # runs tests without coverage to keep them fast. The combine + gate
@@ -60,7 +60,7 @@ jobs:
     needs: unit
     env:
       # sitecustomize.py reads this and calls coverage.process_startup() so
-      # every garuda-tunnel subprocess writes its own .coverage.<pid> file.
+      # every tunstrap subprocess writes its own .coverage.<pid> file.
       COVERAGE_PROCESS_START: ${{ github.workspace }}/pyproject.toml
       # Place the repo root on PYTHONPATH so sitecustomize.py is importable
       # by the subprocess interpreter before it runs the CLI entry-point.

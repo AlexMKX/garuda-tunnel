@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a self-contained "kube mode" to `garuda-tunnel` so it reads a remote kubeconfig, forwards the apiserver port, probes the serving-cert SAN for `tls-server-name`, patches `server:`, and returns ready-to-use kubeconfig fields — eliminating the HCL-side reconstruction.
+**Goal:** Add a self-contained "kube mode" to `tunstrap` so it reads a remote kubeconfig, forwards the apiserver port, probes the serving-cert SAN for `tls-server-name`, patches `server:`, and returns ready-to-use kubeconfig fields — eliminating the HCL-side reconstruction.
 
-**Architecture:** A new `NodeInput.kube_targets` field drives a new `garuda_tunnel/kube.py` module (parse current-context, resolve, probe SAN, patch via `ruamel.yaml`). `TunnelManager._start_one` calls it after forwards open. A new session-directory layer (`garuda_tunnel/session.py`) hosts identity + optional materialized files under a well-known `tunnel-data/` subdir. CLI gains `start --session-dir` / `stop --session-dir`; legacy `stop --pid --token` is removed.
+**Architecture:** A new `NodeInput.kube_targets` field drives a new `tunstrap/kube.py` module (parse current-context, resolve, probe SAN, patch via `ruamel.yaml`). `TunnelManager._start_one` calls it after forwards open. A new session-directory layer (`tunstrap/session.py`) hosts identity + optional materialized files under a well-known `tunnel-data/` subdir. CLI gains `start --session-dir` / `stop --session-dir`; legacy `stop --pid --token` is removed.
 
 **Tech Stack:** Python 3.10+, pydantic 2.x, asyncssh (fork), click 8.x, `ruamel.yaml>=0.18,<0.19`, `cryptography` (already transitively available via integration tests; used for SAN parsing). Tests: pytest (`unit`/`integration` markers), pytest-asyncio (`asyncio_mode=auto`), mypy --strict, ruff, black, pylint (fail-under 9.0), vulture.
 
@@ -15,8 +15,8 @@
 ## File Structure
 
 **New files:**
-- `garuda_tunnel/kube.py` — kube-mode logic: parse current-context, choose SAN, patch kubeconfig. Pure-ish functions + one async orchestration entry. One responsibility: turn a fetched kubeconfig + a live SSH connection into a patched kubeconfig + extracted fields.
-- `garuda_tunnel/session.py` — session-directory lifecycle: resolve/validate `--session-dir`, create `tunnel-data/`, write identity, materialize files, cleanup (generated vs supplied).
+- `tunstrap/kube.py` — kube-mode logic: parse current-context, choose SAN, patch kubeconfig. Pure-ish functions + one async orchestration entry. One responsibility: turn a fetched kubeconfig + a live SSH connection into a patched kubeconfig + extracted fields.
+- `tunstrap/session.py` — session-directory lifecycle: resolve/validate `--session-dir`, create `tunnel-data/`, write identity, materialize files, cleanup (generated vs supplied).
 - `tests/unit/test_schemas_kube.py` — `KubeTarget` + `NodeInput.kube_targets` validation.
 - `tests/unit/test_kube_parse.py` — current-context parse + extraction + multi-context warning.
 - `tests/unit/test_kube_san.py` — SAN selection + insecure_fallback branches.
@@ -27,12 +27,12 @@
 - `tests/integration/test_kube_targets.py` — end-to-end forward+probe+patch, materialize, insecure_fallback.
 
 **Modified files:**
-- `garuda_tunnel/schemas.py` — add `KubeTarget`, `NodeInput.kube_targets`, `DaemonOptions.materialize`, `KubeTargetOutput`, `NodeOutput.kube_targets`, `OutputSchema.session_dir`, `TunnelWarning` reuse.
-- `garuda_tunnel/manager.py` — call kube mode in `_start_one`; thread `kube_targets` + warnings into output; accept `session_dir` for materialization.
-- `garuda_tunnel/_worker.py` — resolve session dir, write identity into `tunnel-data/`, pass `session_dir` to manager + output, cleanup on exit.
-- `garuda_tunnel/daemon.py` — accept `session_dir` through spawn; pass to worker argv.
-- `garuda_tunnel/cli.py` — `start --session-dir`; rewrite `stop` to `--session-dir` only (remove `--pid/--token`).
-- `garuda_tunnel/identity.py` — allow identity files under a caller-supplied `tunnel-data/` dir (parameterize `_state_dir`).
+- `tunstrap/schemas.py` — add `KubeTarget`, `NodeInput.kube_targets`, `DaemonOptions.materialize`, `KubeTargetOutput`, `NodeOutput.kube_targets`, `OutputSchema.session_dir`, `TunnelWarning` reuse.
+- `tunstrap/manager.py` — call kube mode in `_start_one`; thread `kube_targets` + warnings into output; accept `session_dir` for materialization.
+- `tunstrap/_worker.py` — resolve session dir, write identity into `tunnel-data/`, pass `session_dir` to manager + output, cleanup on exit.
+- `tunstrap/daemon.py` — accept `session_dir` through spawn; pass to worker argv.
+- `tunstrap/cli.py` — `start --session-dir`; rewrite `stop` to `--session-dir` only (remove `--pid/--token`).
+- `tunstrap/identity.py` — allow identity files under a caller-supplied `tunnel-data/` dir (parameterize `_state_dir`).
 - `pyproject.toml` — add `ruamel.yaml` + `cryptography` to dependencies.
 - `README.md` — kube-mode section, opt-in materialization, host-key threat model, migration note.
 
@@ -54,9 +54,9 @@ Expected: a passing summary like `N passed`. Record the exact number.
 
 Run each and record PASS/FAIL:
 ```
-.venv/bin/ruff format --check garuda_tunnel
-.venv/bin/ruff check garuda_tunnel
-.venv/bin/mypy --strict garuda_tunnel
+.venv/bin/ruff format --check tunstrap
+.venv/bin/ruff check tunstrap
+.venv/bin/mypy --strict tunstrap
 ```
 Expected: all clean on the untouched baseline.
 
@@ -120,7 +120,7 @@ git commit -m "build: add ruamel.yaml and cryptography for kube mode"
 
 Validates: KubeTarget path rules, default values, and kube_targets
 key/value limits on NodeInput.
-Code: garuda_tunnel/schemas.py
+Code: tunstrap/schemas.py
 Assertion: invalid paths/keys raise ValidationError; defaults resolve
 to insecure_fallback=False and required=True.
 Method: construct models via model_validate and assert resolved fields.
@@ -131,7 +131,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from garuda_tunnel.schemas import InputSchema, KubeTarget, NodeInput
+from tunstrap.schemas import InputSchema, KubeTarget, NodeInput
 from tests.unit.conftest import make_node
 
 pytestmark = pytest.mark.unit
@@ -214,7 +214,7 @@ git commit -m "test: RED KubeTarget + kube_targets validation"
 ### Task 1.3: GREEN — KubeTarget model + NodeInput.kube_targets
 
 **Files:**
-- Modify: `garuda_tunnel/schemas.py:100-185`
+- Modify: `tunstrap/schemas.py:100-185`
 
 - [ ] **Step 1: Add the KubeTarget model after FileSpec**
 
@@ -297,23 +297,23 @@ Expected: PASS (8 passed).
 
 Run:
 ```
-.venv/bin/ruff format --check garuda_tunnel/schemas.py
-.venv/bin/ruff check garuda_tunnel/schemas.py
-.venv/bin/mypy --strict garuda_tunnel/schemas.py
+.venv/bin/ruff format --check tunstrap/schemas.py
+.venv/bin/ruff check tunstrap/schemas.py
+.venv/bin/mypy --strict tunstrap/schemas.py
 ```
 Expected: all clean.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add garuda_tunnel/schemas.py
+git add tunstrap/schemas.py
 git commit -m "feat(schemas): add KubeTarget and NodeInput.kube_targets"
 ```
 
 ### Task 1.4: GREEN — DaemonOptions.materialize
 
 **Files:**
-- Modify: `garuda_tunnel/schemas.py:57-75`
+- Modify: `tunstrap/schemas.py:57-75`
 - Create test inline in `tests/unit/test_schemas_kube.py`
 
 - [ ] **Step 1: Write the failing test (append to test_schemas_kube.py)**
@@ -361,7 +361,7 @@ Expected: PASS (2 passed).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add garuda_tunnel/schemas.py tests/unit/test_schemas_kube.py
+git add tunstrap/schemas.py tests/unit/test_schemas_kube.py
 git commit -m "feat(schemas): add DaemonOptions.materialize"
 ```
 
@@ -377,7 +377,7 @@ git commit -m "feat(schemas): add DaemonOptions.materialize"
 
 Validates: the output models carry the extracted kube fields and the
 always-present session_dir.
-Code: garuda_tunnel/schemas.py
+Code: tunstrap/schemas.py
 Assertion: a fully-populated KubeTargetOutput round-trips; NodeOutput
 defaults kube_targets to {}; OutputSchema requires session_dir.
 Method: construct models and assert field values / required errors.
@@ -388,7 +388,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from garuda_tunnel.schemas import (
+from tunstrap.schemas import (
     KubeTargetOutput,
     NodeOutput,
     OutputSchema,
@@ -453,10 +453,10 @@ def test_output_schema_with_session_dir() -> None:
             "pid": 1,
             "token": "t",
             "started_at": "now",
-            "session_dir": "/run/garuda/1",
+            "session_dir": "/run/tunstrap/1",
         }
     )
-    assert schema.session_dir == "/run/garuda/1"
+    assert schema.session_dir == "/run/tunstrap/1"
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -474,7 +474,7 @@ git commit -m "test: RED kube output schema + session_dir"
 ### Task 1.6: GREEN — KubeTargetOutput, NodeOutput.kube_targets, OutputSchema.session_dir
 
 **Files:**
-- Modify: `garuda_tunnel/schemas.py:230-258`
+- Modify: `tunstrap/schemas.py:230-258`
 
 - [ ] **Step 1: Add KubeTargetOutput before NodeOutput**
 
@@ -538,16 +538,16 @@ Expected: the new tests pass, but tests constructing `OutputSchema` without `ses
 
 Run:
 ```
-.venv/bin/ruff format --check garuda_tunnel/schemas.py
-.venv/bin/ruff check garuda_tunnel/schemas.py
-.venv/bin/mypy --strict garuda_tunnel/schemas.py
+.venv/bin/ruff format --check tunstrap/schemas.py
+.venv/bin/ruff check tunstrap/schemas.py
+.venv/bin/mypy --strict tunstrap/schemas.py
 ```
 Expected: clean.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add garuda_tunnel/schemas.py
+git add tunstrap/schemas.py
 git commit -m "feat(schemas): add KubeTargetOutput, NodeOutput.kube_targets, session_dir"
 ```
 
@@ -651,7 +651,7 @@ git commit -m "test(fixtures): kubeconfig examples for kube mode"
 Validates: KubeconfigView extracts server/CA/cert/key for the current
 context; multi-context files yield an ignored-contexts warning; a
 malformed kubeconfig raises KubeParseError.
-Code: garuda_tunnel/kube.py
+Code: tunstrap/kube.py
 Assertion: extracted fields match the fixtures; warnings list names the
 ignored contexts; bad YAML raises KubeParseError (not a bare YAMLError).
 Method: load fixtures from tests/unit/fixtures/kube and call parse_kubeconfig.
@@ -663,7 +663,7 @@ from pathlib import Path
 
 import pytest
 
-from garuda_tunnel.kube import KubeParseError, parse_kubeconfig
+from tunstrap.kube import KubeParseError, parse_kubeconfig
 
 pytestmark = pytest.mark.unit
 
@@ -716,7 +716,7 @@ def test_parse_rejects_missing_current_context() -> None:
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `.venv/bin/pytest tests/unit/test_kube_parse.py -q`
-Expected: FAIL — `ModuleNotFoundError: No module named 'garuda_tunnel.kube'`.
+Expected: FAIL — `ModuleNotFoundError: No module named 'tunstrap.kube'`.
 
 - [ ] **Step 3: Commit the RED test**
 
@@ -728,7 +728,7 @@ git commit -m "test: RED kubeconfig parse + current-context extraction"
 ### Task 2.3: GREEN — kube.py parse layer
 
 **Files:**
-- Create: `garuda_tunnel/kube.py`
+- Create: `tunstrap/kube.py`
 
 - [ ] **Step 1: Write the parse layer**
 
@@ -859,16 +859,16 @@ Expected: PASS (5 passed).
 
 Run:
 ```
-.venv/bin/ruff format --check garuda_tunnel/kube.py
-.venv/bin/ruff check garuda_tunnel/kube.py
-.venv/bin/mypy --strict garuda_tunnel/kube.py
+.venv/bin/ruff format --check tunstrap/kube.py
+.venv/bin/ruff check tunstrap/kube.py
+.venv/bin/mypy --strict tunstrap/kube.py
 ```
 Expected: clean. (If mypy complains about ruamel types, add a `[[tool.mypy.overrides]]` for `ruamel.*` with `ignore_missing_imports = true` in `pyproject.toml` and re-run; commit that pyproject change with this task.)
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add garuda_tunnel/kube.py pyproject.toml
+git add tunstrap/kube.py pyproject.toml
 git commit -m "feat(kube): parse kubeconfig + extract current-context view"
 ```
 
@@ -884,7 +884,7 @@ git commit -m "feat(kube): parse kubeconfig + extract current-context view"
 
 Validates: prefer the original server host; else first DNS SAN; else
 first IP SAN; empty SAN returns None. A non-exact match is flagged.
-Code: garuda_tunnel/kube.py
+Code: tunstrap/kube.py
 Assertion: choose_tls_server_name returns the documented preference and
 a `fellback` flag indicating a non-exact match.
 Method: call choose_tls_server_name with crafted SAN lists.
@@ -894,7 +894,7 @@ from __future__ import annotations
 
 import pytest
 
-from garuda_tunnel.kube import choose_tls_server_name
+from tunstrap.kube import choose_tls_server_name
 
 pytestmark = pytest.mark.unit
 
@@ -956,7 +956,7 @@ git commit -m "test: RED SAN selection"
 ### Task 2.5: GREEN — SAN selection + extraction helper
 
 **Files:**
-- Modify: `garuda_tunnel/kube.py`
+- Modify: `tunstrap/kube.py`
 
 - [ ] **Step 1: Add the SAN helpers to kube.py**
 
@@ -1027,15 +1027,15 @@ Expected: PASS (4 passed).
 
 Run:
 ```
-.venv/bin/ruff check garuda_tunnel/kube.py
-.venv/bin/mypy --strict garuda_tunnel/kube.py
+.venv/bin/ruff check tunstrap/kube.py
+.venv/bin/mypy --strict tunstrap/kube.py
 ```
 Expected: clean. (If mypy needs a `cryptography` override, add it to pyproject and commit together.)
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add garuda_tunnel/kube.py pyproject.toml
+git add tunstrap/kube.py pyproject.toml
 git commit -m "feat(kube): SAN parsing + tls-server-name selection"
 ```
 
@@ -1052,7 +1052,7 @@ git commit -m "feat(kube): SAN parsing + tls-server-name selection"
 Validates: only the current-context cluster's server is rewritten;
 tls-server-name is set; comments/key order are preserved; insecure mode
 drops CA and sets insecure-skip-tls-verify.
-Code: garuda_tunnel/kube.py
+Code: tunstrap/kube.py
 Assertion: re-parsing the patched output shows the new server/tls fields;
 the original comment line survives; untouched clusters keep their server.
 Method: parse a fixture, patch it, dump, and re-parse to assert.
@@ -1064,7 +1064,7 @@ from pathlib import Path
 
 import pytest
 
-from garuda_tunnel.kube import dump_kubeconfig, parse_kubeconfig, patch_view
+from tunstrap.kube import dump_kubeconfig, parse_kubeconfig, patch_view
 
 pytestmark = pytest.mark.unit
 
@@ -1115,7 +1115,7 @@ git commit -m "test: RED kubeconfig patch"
 ### Task 2.7: GREEN — patch + dump
 
 **Files:**
-- Modify: `garuda_tunnel/kube.py`
+- Modify: `tunstrap/kube.py`
 
 - [ ] **Step 1: Add patch_view and dump_kubeconfig**
 
@@ -1164,15 +1164,15 @@ Expected: PASS (3 passed).
 
 Run:
 ```
-.venv/bin/ruff check garuda_tunnel/kube.py
-.venv/bin/mypy --strict garuda_tunnel/kube.py
+.venv/bin/ruff check tunstrap/kube.py
+.venv/bin/mypy --strict tunstrap/kube.py
 ```
 Expected: clean.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add garuda_tunnel/kube.py
+git add tunstrap/kube.py
 git commit -m "feat(kube): patch server + tls-server-name / insecure"
 ```
 
@@ -1193,7 +1193,7 @@ git commit -m "feat(kube): patch server + tls-server-name / insecure"
 Validates: a generated dir is removed wholesale; a supplied dir keeps
 only tunnel-data removed; tunnel-data is 0700; an existing/symlinked
 tunnel-data is rejected.
-Code: garuda_tunnel/session.py
+Code: tunstrap/session.py
 Assertion: directory existence/mode after open/cleanup matches the rules;
 SessionError is raised on a hostile tunnel-data.
 Method: drive SessionDir against tmp_path with crafted preconditions.
@@ -1207,7 +1207,7 @@ from pathlib import Path
 
 import pytest
 
-from garuda_tunnel.session import SessionDir, SessionError
+from tunstrap.session import SessionDir, SessionError
 
 pytestmark = pytest.mark.unit
 
@@ -1273,7 +1273,7 @@ def test_write_identity_and_materialize(tmp_path: Path) -> None:
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `.venv/bin/pytest tests/unit/test_session_dir.py -q`
-Expected: FAIL — `ModuleNotFoundError: No module named 'garuda_tunnel.session'`.
+Expected: FAIL — `ModuleNotFoundError: No module named 'tunstrap.session'`.
 
 - [ ] **Step 3: Commit the RED test**
 
@@ -1285,7 +1285,7 @@ git commit -m "test: RED session-dir resolve/validate/cleanup"
 ### Task 3.2: GREEN — session.py
 
 **Files:**
-- Create: `garuda_tunnel/session.py`
+- Create: `tunstrap/session.py`
 
 - [ ] **Step 1: Write session.py**
 
@@ -1329,7 +1329,7 @@ class SessionDir:
         """Resolve/validate the session dir and create tunnel-data/ (0700)."""
         if supplied is None:
             parent = base if base is not None else Path(tempfile.gettempdir())
-            root = Path(tempfile.mkdtemp(prefix="garuda-tunnel-", dir=parent))
+            root = Path(tempfile.mkdtemp(prefix="tunstrap-", dir=parent))
             generated = True
         else:
             root = Path(supplied).resolve()
@@ -1404,16 +1404,16 @@ Expected: PASS (6 passed).
 
 Run:
 ```
-.venv/bin/ruff format --check garuda_tunnel/session.py
-.venv/bin/ruff check garuda_tunnel/session.py
-.venv/bin/mypy --strict garuda_tunnel/session.py
+.venv/bin/ruff format --check tunstrap/session.py
+.venv/bin/ruff check tunstrap/session.py
+.venv/bin/mypy --strict tunstrap/session.py
 ```
 Expected: clean.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add garuda_tunnel/session.py
+git add tunstrap/session.py
 git commit -m "feat(session): tunnel-data session dir lifecycle"
 ```
 
@@ -1439,7 +1439,7 @@ stubbed, so it stays a unit test (no real SSH). The function under test is
 Validates: a successful kube_target yields a KubeTargetOutput with the
 local endpoint, chosen tls_server_name, and patched content; a required
 target whose fetch fails is reported as a required failure.
-Code: garuda_tunnel/kube.py::run_kube_targets
+Code: tunstrap/kube.py::run_kube_targets
 Assertion: returned outputs carry the local port + tls name; warnings
 include the non-exact-SAN note; required failures are listed.
 Method: drive run_kube_targets with a fake connection + injected probe.
@@ -1452,8 +1452,8 @@ from typing import Any
 
 import pytest
 
-from garuda_tunnel.kube import run_kube_targets
-from garuda_tunnel.schemas import KubeTarget
+from tunstrap.kube import run_kube_targets
+from tunstrap.schemas import KubeTarget
 
 pytestmark = pytest.mark.unit
 
@@ -1529,7 +1529,7 @@ async def _probe_ok(_host: str, _port: int) -> bytes:
 async def test_run_kube_target_success(monkeypatch: pytest.MonkeyPatch) -> None:
     """A healthy kube_target yields a patched output with the local endpoint."""
     monkeypatch.setattr(
-        "garuda_tunnel.kube.sans_from_cert",
+        "tunstrap.kube.sans_from_cert",
         lambda _der: (["dev-kube-1", "10.0.0.11"], []),
     )
     conn = _FakeConn((FIXTURES / "single_internal_ip.yaml").read_bytes())
@@ -1568,7 +1568,7 @@ git commit -m "test: RED run_kube_targets orchestration"
 ### Task 4.2: GREEN — run_kube_targets
 
 **Files:**
-- Modify: `garuda_tunnel/kube.py`
+- Modify: `tunstrap/kube.py`
 
 - [ ] **Step 1: Add imports + result dataclass + orchestration**
 
@@ -1583,7 +1583,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import asyncssh
 
-from garuda_tunnel.schemas import KubeTarget, KubeTargetOutput, TunnelWarning
+from tunstrap.schemas import KubeTarget, KubeTargetOutput, TunnelWarning
 ```
 
 Define the probe type:
@@ -1744,23 +1744,23 @@ Expected: PASS (1 passed).
 
 Run:
 ```
-.venv/bin/ruff format --check garuda_tunnel/kube.py
-.venv/bin/ruff check garuda_tunnel/kube.py
-.venv/bin/mypy --strict garuda_tunnel/kube.py
+.venv/bin/ruff format --check tunstrap/kube.py
+.venv/bin/ruff check tunstrap/kube.py
+.venv/bin/mypy --strict tunstrap/kube.py
 ```
 Expected: clean. (If pylint flags `too-many-arguments` on `_resolve_tls`, the inline disable is already present; if `run_kube_targets` trips a similar check, add a matching inline disable with a one-line reason.)
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add garuda_tunnel/kube.py
+git add tunstrap/kube.py
 git commit -m "feat(kube): run_kube_targets orchestration (fetch/forward/probe/patch)"
 ```
 
 ### Task 4.3: GREEN — real SAN probe over the forwarded port
 
 **Files:**
-- Modify: `garuda_tunnel/kube.py`
+- Modify: `tunstrap/kube.py`
 
 The unit tests inject `probe`; the production default does a TLS handshake to
 the local forwarded port and returns the peer's DER cert. No unit test drives
@@ -1774,7 +1774,7 @@ Append to `tests/unit/test_kube_run.py`:
 ```python
 def test_default_probe_is_callable() -> None:
     """A default TLS probe is exported for production use."""
-    from garuda_tunnel.kube import default_san_probe
+    from tunstrap.kube import default_san_probe
 
     assert callable(default_san_probe)
 ```
@@ -1823,29 +1823,29 @@ Expected: PASS.
 
 Run:
 ```
-.venv/bin/ruff check garuda_tunnel/kube.py
-.venv/bin/mypy --strict garuda_tunnel/kube.py
+.venv/bin/ruff check tunstrap/kube.py
+.venv/bin/mypy --strict tunstrap/kube.py
 ```
 Expected: clean.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add garuda_tunnel/kube.py tests/unit/test_kube_run.py
+git add tunstrap/kube.py tests/unit/test_kube_run.py
 git commit -m "feat(kube): default TLS SAN probe over forwarded port"
 ```
 
 ### Task 4.4: GREEN — wire kube_targets into TunnelManager
 
 **Files:**
-- Modify: `garuda_tunnel/manager.py`
+- Modify: `tunstrap/manager.py`
 
 - [ ] **Step 1: Extend imports and _NodeRuntime**
 
 Add to the schemas import in manager.py:
 
 ```python
-from garuda_tunnel.schemas import (
+from tunstrap.schemas import (
     ErrorOutput,
     FetchedFile,
     InputSchema,
@@ -1854,7 +1854,7 @@ from garuda_tunnel.schemas import (
     OutputSchema,
     TunnelWarning,
 )
-from garuda_tunnel.kube import run_kube_targets
+from tunstrap.kube import run_kube_targets
 ```
 
 Add fields to `_NodeRuntime`:
@@ -1877,7 +1877,7 @@ Change `TunnelManager.__init__` to accept an optional session writer:
         self.activity_tracker = ActivityTracker()
 ```
 
-> The `session` parameter is a `garuda_tunnel.session.SessionDir | None`. It is
+> The `session` parameter is a `tunstrap.session.SessionDir | None`. It is
 > kept untyped-import-light here (manager already imports many modules); annotate
 > with a `TYPE_CHECKING` import of `SessionDir` if mypy requires it.
 
@@ -1894,7 +1894,7 @@ Insert this block in `_start_one`, after the `fetch_files` block and before
                     node.kube_targets,
                     connect_timeout=node.ssh_options.connect_timeout,
                     probe=__import__(
-                        "garuda_tunnel.kube", fromlist=["default_san_probe"]
+                        "tunstrap.kube", fromlist=["default_san_probe"]
                     ).default_san_probe,
                     node_name=name,
                 )
@@ -1923,7 +1923,7 @@ Insert this block in `_start_one`, after the `fetch_files` block and before
 ```
 
 > Replace the `__import__(...)` indirection with a top-level
-> `from garuda_tunnel.kube import default_san_probe` import if it passes lint;
+> `from tunstrap.kube import default_san_probe` import if it passes lint;
 > the indirection only exists to avoid an import cycle if one appears. Prefer the
 > direct import; fall back to the indirection only if `ruff`/`pylint` reports a cycle.
 
@@ -1990,15 +1990,15 @@ pass `session_dir` (fixed in Phase 5). Confirm the failures are only the
 
 Run:
 ```
-.venv/bin/ruff check garuda_tunnel/manager.py
-.venv/bin/mypy --strict garuda_tunnel/manager.py
+.venv/bin/ruff check tunstrap/manager.py
+.venv/bin/mypy --strict tunstrap/manager.py
 ```
 Expected: clean.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add garuda_tunnel/manager.py
+git add tunstrap/manager.py
 git commit -m "feat(manager): wire kube_targets + session_dir into output"
 ```
 
@@ -2009,9 +2009,9 @@ git commit -m "feat(manager): wire kube_targets + session_dir into output"
 ### Task 5.1: GREEN — identity under a caller-supplied directory
 
 **Files:**
-- Modify: `garuda_tunnel/identity.py`
+- Modify: `tunstrap/identity.py`
 
-Identity currently lives in `_state_dir()` (`~/.local/state/garuda-tunnel`). The
+Identity currently lives in `_state_dir()` (`~/.local/state/tunstrap`). The
 session model puts `daemon.pid`+`token` under `<session-dir>/tunnel-data/`. The
 flock-based identity check must consult that same directory when a session dir
 is in play. We keep `_state_dir()` as the default but let the worker pass the
@@ -2026,7 +2026,7 @@ Append to a new `tests/unit/test_identity_dir.py`:
 
 Validates: a live flock + matching pid in a given directory yields match;
 a foreign pid yields mismatch.
-Code: garuda_tunnel/identity.py
+Code: tunstrap/identity.py
 Assertion: verify_token(..., state_dir=...) reads the lockfile from that dir.
 Method: create a lockfile held by the current process via flock and check.
 """
@@ -2039,7 +2039,7 @@ from pathlib import Path
 
 import pytest
 
-from garuda_tunnel.identity import IdentityCheckResult, verify_token
+from tunstrap.identity import IdentityCheckResult, verify_token
 
 pytestmark = pytest.mark.unit
 
@@ -2091,22 +2091,22 @@ Expected: PASS (1 passed).
 
 Run:
 ```
-.venv/bin/ruff check garuda_tunnel/identity.py
-.venv/bin/mypy --strict garuda_tunnel/identity.py
+.venv/bin/ruff check tunstrap/identity.py
+.venv/bin/mypy --strict tunstrap/identity.py
 ```
 Expected: clean.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add garuda_tunnel/identity.py tests/unit/test_identity_dir.py
+git add tunstrap/identity.py tests/unit/test_identity_dir.py
 git commit -m "feat(identity): allow verify_token state_dir override"
 ```
 
 ### Task 5.2: GREEN — daemon spawn passes session_dir
 
 **Files:**
-- Modify: `garuda_tunnel/daemon.py`
+- Modify: `tunstrap/daemon.py`
 
 - [ ] **Step 1: Add session_dir param to spawn_daemon and worker argv**
 
@@ -2133,22 +2133,22 @@ Expected: existing daemon tests still pass (param is optional). Note any
 
 Run:
 ```
-.venv/bin/ruff check garuda_tunnel/daemon.py
-.venv/bin/mypy --strict garuda_tunnel/daemon.py
+.venv/bin/ruff check tunstrap/daemon.py
+.venv/bin/mypy --strict tunstrap/daemon.py
 ```
 Expected: clean.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add garuda_tunnel/daemon.py
+git add tunstrap/daemon.py
 git commit -m "feat(daemon): pass session_dir through to the worker"
 ```
 
 ### Task 5.3: GREEN — worker creates session dir, materializes, cleans up
 
 **Files:**
-- Modify: `garuda_tunnel/_worker.py`
+- Modify: `tunstrap/_worker.py`
 
 - [ ] **Step 1: Parse --session-dir and create the SessionDir**
 
@@ -2161,7 +2161,7 @@ Add to `_parse_args`:
 Add the import:
 
 ```python
-from garuda_tunnel.session import SessionDir
+from tunstrap.session import SessionDir
 ```
 
 - [ ] **Step 2: Replace the lock-based identity with the session dir**
@@ -2262,22 +2262,22 @@ unit suite is green except any tests still asserting the old lock location
 
 Run:
 ```
-.venv/bin/ruff check garuda_tunnel/_worker.py
-.venv/bin/mypy --strict garuda_tunnel/_worker.py
+.venv/bin/ruff check tunstrap/_worker.py
+.venv/bin/mypy --strict tunstrap/_worker.py
 ```
 Expected: clean.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add garuda_tunnel/_worker.py tests/unit
+git add tunstrap/_worker.py tests/unit
 git commit -m "feat(worker): session-dir identity + materialize + cleanup"
 ```
 
 ### Task 5.4: GREEN — CLI start --session-dir; stop rewritten to --session-dir
 
 **Files:**
-- Modify: `garuda_tunnel/cli.py`
+- Modify: `tunstrap/cli.py`
 
 - [ ] **Step 1: Add --session-dir to start_command and pass it to spawn_daemon**
 
@@ -2307,7 +2307,7 @@ def stop_command(session_dir: str, grace_seconds: int) -> None:
     """Stop the daemon recorded under <session-dir>/tunnel-data and clean it up."""
     from pathlib import Path
 
-    from garuda_tunnel.session import SessionError
+    from tunstrap.session import SessionError
 
     try:
         pid, token = SessionDir.read_identity(session_dir)
@@ -2330,7 +2330,7 @@ Do the same for `status_command` via `_is_alive(pid, token, state_dir)`.
 
 - [ ] **Step 4: Add SessionDir.cleanup_path classmethod**
 
-In `garuda_tunnel/session.py`, add a stop-side helper that removes tunnel-data
+In `tunstrap/session.py`, add a stop-side helper that removes tunnel-data
 without an instance (stop does not know if the dir was generated, so it removes
 only tunnel-data — the safe subset; a generated dir's empty shell is harmless):
 
@@ -2347,7 +2347,7 @@ only tunnel-data — the safe subset; a generated dir's empty shell is harmless)
 Ensure cli.py imports `SessionDir`:
 
 ```python
-from garuda_tunnel.session import SessionDir
+from tunstrap.session import SessionDir
 ```
 
 - [ ] **Step 6: Update CLI unit tests**
@@ -2366,15 +2366,15 @@ Expected: PASS.
 
 Run:
 ```
-.venv/bin/ruff check garuda_tunnel/cli.py garuda_tunnel/session.py
-.venv/bin/mypy --strict garuda_tunnel/cli.py garuda_tunnel/session.py
+.venv/bin/ruff check tunstrap/cli.py tunstrap/session.py
+.venv/bin/mypy --strict tunstrap/cli.py tunstrap/session.py
 ```
 Expected: clean.
 
 - [ ] **Step 9: Commit**
 
 ```bash
-git add garuda_tunnel/cli.py garuda_tunnel/session.py tests/unit
+git add tunstrap/cli.py tunstrap/session.py tests/unit
 git commit -m "feat(cli): start --session-dir; stop via --session-dir (remove legacy)"
 ```
 
@@ -2399,11 +2399,11 @@ assertions).
 
 Run:
 ```
-.venv/bin/ruff format --check garuda_tunnel tests
-.venv/bin/ruff check garuda_tunnel tests
-.venv/bin/mypy --strict garuda_tunnel
-.venv/bin/pylint garuda_tunnel
-.venv/bin/vulture garuda_tunnel vulture_whitelist.py
+.venv/bin/ruff format --check tunstrap tests
+.venv/bin/ruff check tunstrap tests
+.venv/bin/mypy --strict tunstrap
+.venv/bin/pylint tunstrap
+.venv/bin/vulture tunstrap vulture_whitelist.py
 ```
 Expected: ruff/black clean; mypy clean; pylint ≥ 9.0; vulture reports nothing
 new. If vulture flags a genuinely unused symbol introduced by this work, remove
@@ -2479,10 +2479,10 @@ git commit -m "test(it): fake apiserver TLS service + kube fixture"
 Validates: start with a kube_target produces a patched kubeconfig whose
 server points at the local forwarded port and whose tls-server-name is the
 probed SAN; materialize writes the file; stop cleans up the session dir.
-Code: garuda_tunnel kube mode (kube.py, manager.py, _worker.py, cli.py)
+Code: tunstrap kube mode (kube.py, manager.py, _worker.py, cli.py)
 Assertion: output.connections[node].kube_targets.k3s.endpoint is local;
 tls_server_name == 'dev-kube-1'; materialized path exists then is removed.
-Method: drive `garuda-tunnel start`/`stop` subprocesses against compose.
+Method: drive `tunstrap start`/`stop` subprocesses against compose.
 """
 
 from __future__ import annotations
@@ -2497,7 +2497,7 @@ from typing import Any
 
 import pytest
 
-from tests.integration.conftest import garuda_tunnel_start
+from tests.integration.conftest import tunstrap_start
 
 pytestmark = [pytest.mark.integration]
 
@@ -2519,7 +2519,7 @@ def test_kube_target_end_to_end(ssh_test_cluster: dict[str, Any]) -> None:
         "daemon": {"materialize": True, "auto_stop_idle_seconds": 60},
     }
     result = subprocess.run(
-        ["garuda-tunnel", "start", "--session-dir", session_dir],
+        ["tunstrap", "start", "--session-dir", session_dir],
         input=json.dumps(payload),
         text=True,
         capture_output=True,
@@ -2535,7 +2535,7 @@ def test_kube_target_end_to_end(ssh_test_cluster: dict[str, Any]) -> None:
     assert kt["path"] is not None and Path(kt["path"]).is_file()
 
     stop = subprocess.run(
-        ["garuda-tunnel", "stop", "--session-dir", session_dir],
+        ["tunstrap", "stop", "--session-dir", session_dir],
         text=True,
         capture_output=True,
     )
@@ -2543,14 +2543,14 @@ def test_kube_target_end_to_end(ssh_test_cluster: dict[str, Any]) -> None:
     assert not (Path(session_dir) / "tunnel-data").exists()
 ```
 
-> The `garuda_tunnel_start` helper imported above is reused only for shape
+> The `tunstrap_start` helper imported above is reused only for shape
 > reference; this test invokes `start` directly to pass `--session-dir`. Keep the
 > import only if a helper call is added; otherwise drop it to satisfy vulture/ruff.
 
 - [ ] **Step 2: Run the integration test**
 
 Run: `PATH="$PWD/.venv/bin:$PATH" .venv/bin/pytest tests/integration/test_kube_targets.py -m integration -q`
-Expected: PASS. (Requires Docker; the PATH prepend makes the bare `garuda-tunnel`
+Expected: PASS. (Requires Docker; the PATH prepend makes the bare `tunstrap`
 in conftest resolve to the venv entry point.)
 
 - [ ] **Step 3: Commit**
@@ -2593,7 +2593,7 @@ def test_kube_target_insecure_fallback(ssh_test_cluster: dict[str, Any]) -> None
         "daemon": {"auto_stop_idle_seconds": 60},
     }
     result = subprocess.run(
-        ["garuda-tunnel", "start", "--session-dir", session_dir],
+        ["tunstrap", "start", "--session-dir", session_dir],
         input=json.dumps(payload),
         text=True,
         capture_output=True,
@@ -2607,7 +2607,7 @@ def test_kube_target_insecure_fallback(ssh_test_cluster: dict[str, Any]) -> None
     assert "insecure-skip-tls-verify: true" in patched
     assert any("insecure_fallback" in w["error"] for w in out["warnings"])
     subprocess.run(
-        ["garuda-tunnel", "stop", "--session-dir", session_dir],
+        ["tunstrap", "stop", "--session-dir", session_dir],
         text=True, capture_output=True, check=False,
     )
 ```
@@ -2684,11 +2684,11 @@ git commit -m "docs: README kube mode, materialization, host-key, migration"
 
 Run:
 ```
-.venv/bin/ruff format --check garuda_tunnel tests
-.venv/bin/ruff check garuda_tunnel tests
-.venv/bin/mypy --strict garuda_tunnel
-.venv/bin/pylint garuda_tunnel
-.venv/bin/vulture garuda_tunnel vulture_whitelist.py
+.venv/bin/ruff format --check tunstrap tests
+.venv/bin/ruff check tunstrap tests
+.venv/bin/mypy --strict tunstrap
+.venv/bin/pylint tunstrap
+.venv/bin/vulture tunstrap vulture_whitelist.py
 .venv/bin/pytest tests/unit -q
 PATH="$PWD/.venv/bin:$PATH" .venv/bin/pytest tests/integration -m integration -q
 ```
@@ -2701,7 +2701,7 @@ artifact (untracked; do not commit).
 
 - [ ] **Step 3: Sanity-grep for leftover legacy references**
 
-Run: `rg -n "stop --pid|--token|\.kube\.|gfn\.team" garuda_tunnel README.md docs/specs`
+Run: `rg -n "stop --pid|--token|\.kube\.|gfn\.team" tunstrap README.md docs/specs`
 Expected: no production references to removed `stop --pid/--token`, no old
 `.kube.` output key, no real domain. (Hits inside migration notes that
 explicitly describe the removal are acceptable.)
@@ -2732,7 +2732,7 @@ Expected: PR URL returned. Reference the spec
 - **Async tests** rely on `asyncio_mode = auto` (already in pyproject); mark
   coroutine tests with `@pytest.mark.asyncio` only where shown.
 - **Integration PATH:** `tests/integration/conftest.py` invokes a bare
-  `garuda-tunnel`; always prepend the venv: `PATH="$PWD/.venv/bin:$PATH"`.
+  `tunstrap`; always prepend the venv: `PATH="$PWD/.venv/bin:$PATH"`.
 - **mypy + third-party stubs:** if `ruamel.yaml` or `cryptography` lack stubs,
   add a `[[tool.mypy.overrides]]` block with `ignore_missing_imports = true` and
   commit it alongside the first task that imports them.

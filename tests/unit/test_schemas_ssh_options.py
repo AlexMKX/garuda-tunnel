@@ -3,7 +3,7 @@
 Validates: SSHOptions exposes only documented fields (compression,
 connect_timeout); legacy paramiko/sshtunnel-era fields are rejected by
 extra=forbid.
-Code: garuda_tunnel/schemas.py::SSHOptions
+Code: tunstrap/schemas.py::SSHOptions
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from garuda_tunnel.schemas import SSHOptions
+from tunstrap.schemas import SSHOptions
 
 pytestmark = pytest.mark.unit
 

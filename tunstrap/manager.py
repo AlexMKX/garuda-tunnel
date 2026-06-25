@@ -9,11 +9,11 @@ from datetime import datetime, timezone
 
 import asyncssh
 
-from garuda_tunnel.activity import ActivityTracker
-from garuda_tunnel.exceptions import RequiredTunnelFailure, TunnelStartupError
-from garuda_tunnel.fetcher import fetch_files
-from garuda_tunnel.kube import default_san_probe, run_kube_targets
-from garuda_tunnel.schemas import (
+from tunstrap.activity import ActivityTracker
+from tunstrap.exceptions import RequiredTunnelFailure, TunnelStartupError
+from tunstrap.fetcher import fetch_files
+from tunstrap.kube import default_san_probe, run_kube_targets
+from tunstrap.schemas import (
     ErrorOutput,
     FetchedFile,
     InputSchema,
@@ -22,8 +22,8 @@ from garuda_tunnel.schemas import (
     OutputSchema,
     TunnelWarning,
 )
-from garuda_tunnel.session import SessionDir
-from garuda_tunnel.ssh import close_transport, open_connection, open_local_forwards
+from tunstrap.session import SessionDir
+from tunstrap.ssh import close_transport, open_connection, open_local_forwards
 
 # Errors we expect from a remote SSH peer, local sshd handshake, or
 # from loading inline client material. Anything outside this tuple is a
@@ -73,7 +73,6 @@ class TunnelManager:
         self,
         *,
         pid: int,
-        token: str,
         session_dir: str,
     ) -> OutputSchema | ErrorOutput:
         """Open every node concurrently; build OutputSchema or ErrorOutput."""
@@ -117,7 +116,6 @@ class TunnelManager:
         return OutputSchema(
             connections=connections,
             pid=pid,
-            token=token,
             session_dir=session_dir,
             started_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             warnings=warnings,

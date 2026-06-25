@@ -2,7 +2,7 @@
 
 Validates: FileSpec absolute-path constraints, fetch_files key/value
 limits, and required default semantics.
-Code: garuda_tunnel/schemas.py
+Code: tunstrap/schemas.py
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from garuda_tunnel.schemas import FileSpec, InputSchema, NodeInput
+from tunstrap.schemas import FileSpec, InputSchema, NodeInput
 from tests.unit.conftest import make_node
 
 pytestmark = pytest.mark.unit

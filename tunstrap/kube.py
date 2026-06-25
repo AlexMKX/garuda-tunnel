@@ -24,11 +24,11 @@ from cryptography.x509.oid import ExtensionOID
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
+from tunstrap.exceptions import KubeParseError
+from tunstrap.schemas import KubeTarget, KubeTargetOutput, TunnelWarning
+
 if TYPE_CHECKING:
     import asyncssh
-
-from garuda_tunnel.exceptions import KubeParseError
-from garuda_tunnel.schemas import KubeTarget, KubeTargetOutput, TunnelWarning
 
 __all__ = [
     "KubeParseError",

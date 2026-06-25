@@ -6,7 +6,7 @@
 
 ## 1. Problem
 
-`garuda-tunnel start` daemonizes and stays alive until the user runs `garuda-tunnel stop --pid X --token Y`. In disposable contexts (CI runners, ephemeral developer shells, container init scripts) the user may forget to call `stop`, or the parent process may exit abnormally before reaching the `stop` step. Result: orphaned daemons holding SSH connections to internal infrastructure, accumulating across runs.
+`tunstrap start` daemonizes and stays alive until the user runs `tunstrap stop --pid X --token Y`. In disposable contexts (CI runners, ephemeral developer shells, container init scripts) the user may forget to call `stop`, or the parent process may exit abnormally before reaching the `stop` step. Result: orphaned daemons holding SSH connections to internal infrastructure, accumulating across runs.
 
 We want the daemon to detect that no one is using its forwards and shut itself down after a configurable idle period.
 
@@ -84,7 +84,7 @@ async def forward_local_port(
 - Tag: `2.23.0+forward-tracker.1` (PEP 440 local version identifier; safe for `pip install`).
 - Upstream PR will be filed by the project owner against `ronf:develop` (or `main`, whichever asyncssh uses).
 - Until upstream merges:
-  - `pyproject.toml` of `garuda-tunnel` depends on the fork via VCS URL.
+  - `pyproject.toml` of `tunstrap` depends on the fork via VCS URL.
   - We monitor upstream for asyncssh bugfixes that we may want to cherry-pick.
 - When upstream merges and ships (asyncssh ≥ 2.24 or 3.0):
   - Switch `pyproject.toml` back to `asyncssh>={whatever},<3` (or appropriate range).
@@ -105,7 +105,7 @@ async def forward_local_port(
 ## 5. Schema
 
 ```python
-# garuda_tunnel/schemas.py
+# tunstrap/schemas.py
 
 class DaemonOptions(BaseModel):
     """Daemon-side knobs: log file, shutdown grace, and idle stop."""
@@ -136,7 +136,7 @@ Validation:
 
 ## 6. Components
 
-### 6.1 `garuda_tunnel/activity.py` (new file)
+### 6.1 `tunstrap/activity.py` (new file)
 
 ```python
 """Forward-connection activity tracker for idle-based auto-stop."""
@@ -186,7 +186,7 @@ class ActivityTracker:
 
 Thread/concurrency notes: all calls happen on the single asyncio loop thread. No locks needed. Underflow guard (`max(0, ...)`) covers theoretical races during shutdown when listeners close before forwarders finalize.
 
-### 6.2 `garuda_tunnel/_worker.py` — idle watchdog
+### 6.2 `tunstrap/_worker.py` — idle watchdog
 
 ```python
 async def _idle_watchdog(
@@ -236,7 +236,7 @@ finally:
     _release_identity_lock(lock_fd, args.token)
 ```
 
-### 6.3 `garuda_tunnel/manager.py` — tracker ownership
+### 6.3 `tunstrap/manager.py` — tracker ownership
 
 ```python
 class TunnelManager:
@@ -248,7 +248,7 @@ class TunnelManager:
 
 The tracker is owned by the manager (one per daemon) and passed down to `open_local_forwards`.
 
-### 6.4 `garuda_tunnel/ssh.py` — wire the tracker
+### 6.4 `tunstrap/ssh.py` — wire the tracker
 
 ```python
 async def open_local_forwards(
@@ -290,19 +290,19 @@ Replace the current Install section. Final:
 `uvx` (recommended for one-shot / disposable use — no install needed):
 
 ```bash
-uvx --from git+https://github.com/AlexMKX/garuda-tunnel.git garuda-tunnel --help
+uvx --from git+https://github.com/AlexMKX/tunstrap.git tunstrap --help
 ```
 
 `pipx` (persistent install):
 
 ```bash
-pipx install git+https://github.com/AlexMKX/garuda-tunnel.git
+pipx install git+https://github.com/AlexMKX/tunstrap.git
 ```
 
 For development:
 
 ```bash
-git clone https://github.com/AlexMKX/garuda-tunnel.git && cd garuda-tunnel
+git clone https://github.com/AlexMKX/tunstrap.git && cd tunstrap
 pip install -e ".[dev]"
 ```
 
@@ -332,7 +332,7 @@ EOF
 )
 ```
 
-With a short prose note: "If no client connects for 10 minutes, the daemon shuts down on its own. Useful for ephemeral CI runs that may abort before reaching `garuda-tunnel stop`."
+With a short prose note: "If no client connects for 10 minutes, the daemon shuts down on its own. Useful for ephemeral CI runs that may abort before reaching `tunstrap stop`."
 
 ## 8. Tests
 
@@ -362,7 +362,7 @@ With a short prose note: "If no client connects for 10 minutes, the daemon shuts
 ### 8.2 Integration (`tests/integration/test_auto_stop.py`, new file)
 
 **`test_idle_auto_stop_kills_daemon`**:
-1. `garuda-tunnel start` with payload `{..., "daemon": {"auto_stop_idle_seconds": 3}}`.
+1. `tunstrap start` with payload `{..., "daemon": {"auto_stop_idle_seconds": 3}}`.
 2. Do not connect to any forward.
 3. Sleep 5 seconds.
 4. `os.kill(pid, 0)` raises `ProcessLookupError` (daemon exited).
@@ -386,7 +386,7 @@ After this change, the worker exits cleanly when any of these happen (whichever 
 - Required-node failure during `start` (existing; not affected).
 - Schema parse error or lock-acquire error (existing; not affected).
 
-In all paths, `_release_identity_lock` runs in the finally block of `_run`. The lockfile is removed; subsequent `garuda-tunnel status --pid X --token Y` will report `not_found`.
+In all paths, `_release_identity_lock` runs in the finally block of `_run`. The lockfile is removed; subsequent `tunstrap status --pid X --token Y` will report `not_found`.
 
 ## 10. Decisions and considerations
 
@@ -425,7 +425,7 @@ Alternatives considered:
 Chose: per-daemon.
 
 Alternatives considered:
-- **Per-node:** node idle → stop just that node's forwards. Then `garuda-tunnel status` becomes complicated ("partial daemon"); `garuda-tunnel stop` semantics unclear. Worth doing if real demand emerges; YAGNI now.
+- **Per-node:** node idle → stop just that node's forwards. Then `tunstrap status` becomes complicated ("partial daemon"); `tunstrap stop` semantics unclear. Worth doing if real demand emerges; YAGNI now.
 - **Per-handle:** even finer granularity. Same issues as per-node, more bookkeeping.
 
 ### 10.5 Timer start: at daemon ready vs at first connect
@@ -455,7 +455,7 @@ Alternative: propagate exceptions. Would let a buggy tracker close the channel m
 
 Chose: `uvx` first, `pipx` second.
 
-`uvx` does not install anything globally; it runs the binary from a fresh, cached venv. For a tool that's invoked maybe once per CI job and never again, this is strictly better than `pipx`'s persistent install. `pipx` stays as the option for developers who run `garuda-tunnel` interactively day-to-day.
+`uvx` does not install anything globally; it runs the binary from a fresh, cached venv. For a tool that's invoked maybe once per CI job and never again, this is strictly better than `pipx`'s persistent install. `pipx` stays as the option for developers who run `tunstrap` interactively day-to-day.
 
 ## 11. Constraints and invariants
 
@@ -469,7 +469,7 @@ Chose: `uvx` first, `pipx` second.
 
 - Per-node / per-handle idle timeouts.
 - Byte-level activity tracking.
-- A `garuda-tunnel keepalive --pid X --token Y` command for clients to reset the timer without opening a real TCP connection.
+- A `tunstrap keepalive --pid X --token Y` command for clients to reset the timer without opening a real TCP connection.
 - A "minimum lifetime" floor (don't auto-stop in the first 60 seconds regardless).
 - Notifying the user / log line / event when auto-stop fires (the daemon's stderr goes to `log_file` if set; we can add a log line in a follow-up if it turns out to be hard to debug).
 
@@ -504,6 +504,6 @@ Key changes:
 - **Byte-level observer hooks added:** `forward_local_bytes(data)` and
   `forward_remote_bytes(data)` on `SSHForwardTracker`; not overridden by
   `_IdleConnectionTracker`.
-- **`garuda_tunnel.activity` updated** to implement `_IdleConnectionTracker`
+- **`tunstrap.activity` updated** to implement `_IdleConnectionTracker`
   as `SSHPortForwardTracker` and expose `ActivityTracker.make_tracker` as
   the factory.

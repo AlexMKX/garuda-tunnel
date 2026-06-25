@@ -9,7 +9,7 @@ local. List one reference per validator so vulture's 100%-confidence
 
 from __future__ import annotations
 
-from garuda_tunnel import schemas as _schemas
+from tunstrap import schemas as _schemas
 
 # Each @field_validator below has a ``cls`` parameter we cannot omit.
 _ = _schemas.FileSpec._validate_absolute  # noqa: SLF001

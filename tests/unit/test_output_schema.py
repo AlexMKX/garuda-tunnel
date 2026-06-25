@@ -2,7 +2,7 @@
 
 Validates: FetchedFile XOR invariant (success XOR error), NodeOutput
 defaults, OutputSchema JSON round-trip with fetched-files payload.
-Code: garuda_tunnel/schemas.py
+Code: tunstrap/schemas.py
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from garuda_tunnel.schemas import (
+from tunstrap.schemas import (
     FetchedFile,
     NodeOutput,
     OutputSchema,
@@ -69,7 +69,6 @@ def test_output_schema_round_trip_with_fetch_files() -> None:
             )
         },
         pid=1,
-        token="t",
         session_dir="/tmp/x",
         started_at="2026-05-19T10:00:00Z",
         warnings=[TunnelWarning(node="b", error="x")],

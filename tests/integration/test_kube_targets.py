@@ -3,10 +3,10 @@
 Validates: start with a kube_target produces a patched kubeconfig whose
 server points at the local forwarded port and whose tls-server-name is the
 probed SAN; materialize writes the file; stop cleans up the session dir.
-Code: garuda_tunnel kube mode (kube.py, manager.py, _worker.py, cli.py)
+Code: tunstrap kube mode (kube.py, manager.py, _worker.py, cli.py)
 Assertion: output.connections[node].kube_targets.k3s.endpoint is local;
 tls_server_name == 'dev-kube-1'; materialized path exists then is removed.
-Method: drive `garuda-tunnel start`/`stop` subprocesses against compose.
+Method: drive `tunstrap start`/`stop` subprocesses against compose.
 """
 
 from __future__ import annotations
@@ -77,7 +77,7 @@ def test_kube_target_end_to_end(
         "daemon": {"materialize": True, "auto_stop_idle_seconds": 60},
     }
     result = subprocess.run(
-        ["garuda-tunnel", "start", "--session-dir", session_dir],
+        ["tunstrap", "start", "--session-dir", session_dir],
         input=json.dumps(payload),
         text=True,
         capture_output=True,
@@ -95,7 +95,7 @@ def test_kube_target_end_to_end(
 
     # Stop cleans up the session dir's tunnel-data.
     stop = subprocess.run(
-        ["garuda-tunnel", "stop", "--session-dir", session_dir],
+        ["tunstrap", "stop", "--session-dir", session_dir],
         text=True,
         capture_output=True,
         check=False,
@@ -133,7 +133,7 @@ def test_kube_target_insecure_fallback(
         "daemon": {"auto_stop_idle_seconds": 60},
     }
     result = subprocess.run(
-        ["garuda-tunnel", "start", "--session-dir", session_dir],
+        ["tunstrap", "start", "--session-dir", session_dir],
         input=json.dumps(payload),
         text=True,
         capture_output=True,
@@ -149,7 +149,7 @@ def test_kube_target_insecure_fallback(
     assert any("insecure_fallback" in w["error"] for w in out["warnings"]), out["warnings"]
 
     subprocess.run(
-        ["garuda-tunnel", "stop", "--session-dir", session_dir],
+        ["tunstrap", "stop", "--session-dir", session_dir],
         text=True,
         capture_output=True,
         check=False,

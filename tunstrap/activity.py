@@ -11,7 +11,7 @@ split that into a pair:
   asyncssh drives; it reports open/close back into the shared aggregate.
 
 One :class:`ActivityTracker` is owned by
-:class:`~garuda_tunnel.manager.TunnelManager` and its ``make_tracker``
+:class:`~tunstrap.manager.TunnelManager` and its ``make_tracker``
 bound method is passed as ``tracker_factory`` to every
 ``forward_local_port`` call, so all node forwards feed a single counter.
 """

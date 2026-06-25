@@ -12,7 +12,7 @@ def _scrub(details: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in details.items() if k not in _SECRET_KEYS}
 
 
-class GarudaTunnelError(Exception):
+class TunstrapError(Exception):
     """Base class for every error this tool reports as structured JSON."""
 
     def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
@@ -30,34 +30,39 @@ class GarudaTunnelError(Exception):
         }
 
 
-class SchemaValidationError(GarudaTunnelError):
+class SchemaValidationError(TunstrapError):
     """Input JSON failed pydantic validation; details carries errors()."""
 
 
-class TunnelStartupError(GarudaTunnelError):
+class TunnelStartupError(TunstrapError):
     """A single node failed to open its transport or local forward."""
 
 
-class RequiredTunnelFailure(GarudaTunnelError):
+class RequiredTunnelFailure(TunstrapError):
     """At least one required node could not be started; the daemon aborts."""
 
 
-class DaemonError(GarudaTunnelError):
+class DaemonError(TunstrapError):
     """Generic daemon-side failure surfaced via the IPC handshake."""
 
 
-class KubeParseError(GarudaTunnelError):
+class KubeParseError(TunstrapError):
     """A kubeconfig could not be parsed or lacked a usable current-context."""
 
 
-_EXIT_CODES: dict[type[GarudaTunnelError], int] = {
+class SessionActive(TunstrapError):
+    """A daemon session is already running; a second start is rejected."""
+
+
+_EXIT_CODES: dict[type[TunstrapError], int] = {
     SchemaValidationError: 1,
     RequiredTunnelFailure: 2,
     KubeParseError: 2,
+    SessionActive: 3,
     DaemonError: 4,
 }
 
 
-def exit_code_for(exc: GarudaTunnelError) -> int:
+def exit_code_for(exc: TunstrapError) -> int:
     """Map a domain exception to its CLI exit code; default to 1."""
     return _EXIT_CODES.get(type(exc), 1)

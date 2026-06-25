@@ -2,7 +2,7 @@
 
 Validates: KubeTarget path rules, default values, and kube_targets
 key/value limits on NodeInput.
-Code: garuda_tunnel/schemas.py
+Code: tunstrap/schemas.py
 Assertion: invalid paths/keys raise ValidationError; defaults resolve
 to insecure_fallback=False and required=True.
 Method: construct models via model_validate and assert resolved fields.
@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from garuda_tunnel.schemas import InputSchema, KubeTarget, NodeInput
+from tunstrap.schemas import InputSchema, KubeTarget, NodeInput
 from tests.unit.conftest import make_node
 
 pytestmark = pytest.mark.unit

@@ -2,7 +2,7 @@
 
 When the test harness exports ``COVERAGE_PROCESS_START`` pointing at the
 project's coverage config, every Python subprocess (here: the
-``garuda-tunnel`` CLI) starts coverage measurement immediately on
+``tunstrap`` CLI) starts coverage measurement immediately on
 interpreter init via this hook. Subsequent ``coverage combine`` merges
 the per-process ``.coverage.*`` files into a single dataset.
 
