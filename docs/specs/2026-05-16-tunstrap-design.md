@@ -1,8 +1,8 @@
-# garuda-tunnel — design
+# tunstrap — design
 
 **Status**: design
 **Date**: 2026-05-16
-**Repository**: https://github.com/AlexMKX/garuda-tunnel
+**Repository**: https://github.com/AlexMKX/tunstrap
 **License**: MIT
 
 > **Superseded.** This document describes the original design as shipped
@@ -16,7 +16,7 @@
 
 ## Context
 
-Garuda's k3s edge pilot (see garuda-repo G1b/G2/G3 future specs) needs API
+A k3s edge pilot consumer project (specs internal) needs API
 access from a disposable execution environment (CI runner, local container,
 operator workstation). The constraints:
 
@@ -29,13 +29,13 @@ operator workstation). The constraints:
 - `helm` / `kubectl` providers used from Terraform/OpenTofu need an
   apiserver endpoint that resolves at plan/apply time.
 
-`garuda-tunnel` is a standalone Python CLI that opens SSH local-forward
+`tunstrap` is a standalone Python CLI that opens SSH local-forward
 tunnels to multiple nodes in one operation, returns the resulting
 `127.0.0.1:port` mapping as JSON, and daemonizes. The caller (a Terragrunt
 `before_hook`, a CI job script, an operator) saves the JSON, runs whatever
 needs the tunnels, then kills the daemon by PID.
 
-This tool is consumed by — but not coupled to — garuda's k3s workflow.
+This tool is consumed by — but not coupled to — the consumer's k3s workflow.
 It is generic enough for any "open N SSH tunnels, get N local ports"
 scenario.
 
@@ -89,7 +89,7 @@ scenario.
 
 ## Success criteria
 
-- `pipx run --spec git+https://github.com/AlexMKX/garuda-tunnel.git@<TAG> garuda-tunnel --help`
+- `pipx run --spec git+https://github.com/AlexMKX/tunstrap.git@<TAG> tunstrap --help`
   works on a fresh disposable environment.
 - Schema validation catches malformed input; non-zero exit with structured
   JSON error.
@@ -121,7 +121,7 @@ scenario.
 ### Package layout
 
 ```
-garuda-tunnel/                          (separate git repo)
+tunstrap/                          (separate git repo)
 ├── pyproject.toml                      Hatch-based, dynamic version from git tag
 ├── README.md                           Quickstart, schemas, examples
 ├── LICENSE                             MIT
@@ -130,10 +130,10 @@ garuda-tunnel/                          (separate git repo)
 │   ├── test.yml                        Unit matrix + integration on Linux
 │   └── release.yml                     On tag push: build + GitHub Release
 ├── docs/specs/
-│   └── 2026-05-16-garuda-tunnel-design.md     (this file)
-├── garuda_tunnel/
+│   └── 2026-05-16-tunstrap-design.md     (this file)
+├── tunstrap/
 │   ├── __init__.py                     `__version__` via importlib.metadata
-│   ├── __main__.py                     `python -m garuda_tunnel` entrypoint
+│   ├── __main__.py                     `python -m tunstrap` entrypoint
 │   ├── cli.py                          Click commands: start, stop, status
 │   ├── schemas.py                      Pydantic models for I/O
 │   ├── manager.py                      TunnelManager: orchestration
@@ -160,10 +160,10 @@ garuda-tunnel/                          (separate git repo)
 | `cli.py` | Click commands; read stdin / write stdout JSON; remap Click usage errors to exit 64; map domain exceptions to exit codes. |
 | `schemas.py` | Pydantic models: `NodeInput`, `SSHOptions`, `DaemonOptions`, `InputSchema`, `ConnectionEntry`, `TunnelWarning`, `OutputSchema`, `ErrorOutput`. |
 | `manager.py` | `TunnelManager`: holds list of `sshtunnel.SSHTunnelForwarder` instances; `start_all()` opens concurrently via `ThreadPoolExecutor`; aggregates per-node `StartResult`; `stop_all()` for cleanup; parses inline PEM keys in memory. |
-| `daemon.py` | `spawn_daemon(schema)`: POSIX double-fork with an IPC pipe; after the second fork the pre-daemon `execve`s itself into `python -m garuda_tunnel._worker --ipc-fd <N>` with `GARUDA_TUNNEL_TOKEN=<token>` in the new envp so the kernel snapshots the token into `/proc/<pid>/environ`; the worker then starts tunnels, sends startup result and final PID to parent, redirects stdin/stdout/stderr, installs SIGTERM/SIGINT handlers, then blocks on `threading.Event().wait()`. |
-| `_worker.py` | Internal entry point invoked via `python -m garuda_tunnel._worker`. Reads `InputSchema` JSON from stdin, runs `TunnelManager.start_all_and_build_output`, writes the IPC message to the file descriptor passed via `--ipc-fd`, and blocks on signals. Not part of the public CLI. |
-| `exceptions.py` | Hierarchy: `GarudaTunnelError` → `SchemaValidationError`, `TunnelStartupError`, `RequiredTunnelFailure`, `DaemonError`. Each maps to a specific exit code. |
-| `__main__.py` | `python -m garuda_tunnel` → `cli.main()`. |
+| `daemon.py` | `spawn_daemon(schema)`: POSIX double-fork with an IPC pipe; after the second fork the pre-daemon `execve`s itself into `python -m tunstrap._worker --ipc-fd <N>` with `TUNSTRAP_TOKEN=<token>` in the new envp so the kernel snapshots the token into `/proc/<pid>/environ`; the worker then starts tunnels, sends startup result and final PID to parent, redirects stdin/stdout/stderr, installs SIGTERM/SIGINT handlers, then blocks on `threading.Event().wait()`. |
+| `_worker.py` | Internal entry point invoked via `python -m tunstrap._worker`. Reads `InputSchema` JSON from stdin, runs `TunnelManager.start_all_and_build_output`, writes the IPC message to the file descriptor passed via `--ipc-fd`, and blocks on signals. Not part of the public CLI. |
+| `exceptions.py` | Hierarchy: `TunstrapError` → `SchemaValidationError`, `TunnelStartupError`, `RequiredTunnelFailure`, `DaemonError`. Each maps to a specific exit code. |
+| `__main__.py` | `python -m tunstrap` → `cli.main()`. |
 | `__init__.py` | Exports `__version__` from `importlib.metadata`. No public Python API. |
 
 ### Data flow: `start`
@@ -171,7 +171,7 @@ garuda-tunnel/                          (separate git repo)
 ```
 caller                                      final daemon process
 ------                                      --------------------
-1. echo $INPUT | garuda-tunnel start
+1. echo $INPUT | tunstrap start
 2.   cli.start():
        parse stdin → dict
        schemas.InputSchema.model_validate
@@ -192,10 +192,10 @@ caller                                      final daemon process
                                                os.execve(
                                                  sys.executable,
                                                  [sys.executable, "-m",
-                                                  "garuda_tunnel._worker",
+                                                  "tunstrap._worker",
                                                   "--ipc-fd", str(ipc_write_fd),
                                                   "--schema-fd", str(schema_read_fd)],
-                                                 env={..., "GARUDA_TUNNEL_TOKEN": runtime_token},
+                                                 env={..., "TUNSTRAP_TOKEN": runtime_token},
                                                )
                                              (the new envp contains the token,
                                               so /proc/<pid>/environ will show it)
@@ -250,7 +250,7 @@ caller resumes:
    token = json["token"]
    ... do work using tunnels ...
 
-N. garuda-tunnel stop --pid PID --token TOKEN ─────→ SIGTERM received
+N. tunstrap stop --pid PID --token TOKEN ─────→ SIGTERM received
                                                    handler:
                                                      manager.stop_all() ─────→ close all SSHTunnelForwarder
                                                      sys.exit(0)
@@ -269,7 +269,7 @@ reported its final PID and startup result through the IPC pipe. The PID in
 `OutputSchema` is therefore the PID that `stop` and `status` should target.
 
 **Critical**: the runtime token is placed in the worker's environment via
-`os.execve(..., env={..., GARUDA_TUNNEL_TOKEN: token})`, not via
+`os.execve(..., env={..., TUNSTRAP_TOKEN: token})`, not via
 `os.environ[...]=token` after fork. On Linux the kernel snapshots `envp` at
 `execve(2)` and exposes it via `/proc/<pid>/environ`; variables added via
 `setenv(3)` (which Python's `os.environ` uses) after exec live in libc's heap
@@ -350,11 +350,11 @@ def spawn_daemon(schema: InputSchema) -> dict:
 
     # Pre-daemon: replace process image with the worker, putting the token in
     # the new envp so /proc/<pid>/environ can see it after exec.
-    env = {**os.environ, GARUDA_TUNNEL_TOKEN_ENV: runtime_token}
+    env = {**os.environ, TUNSTRAP_TOKEN_ENV: runtime_token}
     os.execve(
         sys.executable,
         [
-            sys.executable, "-m", "garuda_tunnel._worker",
+            sys.executable, "-m", "tunstrap._worker",
             "--ipc-fd", str(ipc_write_fd),
             "--schema-fd", str(schema_read_fd),
         ],
@@ -363,10 +363,10 @@ def spawn_daemon(schema: InputSchema) -> dict:
 ```
 
 ```python
-# garuda_tunnel/_worker.py
+# tunstrap/_worker.py
 def main() -> None:
     args = parse_args()                                 # --ipc-fd, --schema-fd
-    token = os.environ[GARUDA_TUNNEL_TOKEN_ENV]         # set by parent's execve
+    token = os.environ[TUNSTRAP_TOKEN_ENV]         # set by parent's execve
     schema_json = os.read(args.schema_fd, MAX_SCHEMA_BYTES).decode("utf-8")
     os.close(args.schema_fd)
     schema = InputSchema.model_validate_json(schema_json)
@@ -396,7 +396,7 @@ The pre-daemon never returns from `os.execve`; the kernel replaces the process
 image with the freshly-loaded Python interpreter, which runs `_worker.main()`
 in the same process ID as the second-fork child. `/proc/<pid>/environ` now
 contains the snapshot of `env` passed to `execve`, including
-`GARUDA_TUNNEL_TOKEN=<token>`.
+`TUNSTRAP_TOKEN=<token>`.
 
 ---
 
@@ -492,7 +492,7 @@ class ErrorOutput(BaseModel):
 ### `stop`
 
 ```
-$ garuda-tunnel stop --pid <PID> --token <TOKEN> [--grace-seconds N]
+$ tunstrap stop --pid <PID> --token <TOKEN> [--grace-seconds N]
 ```
 
 Output (always exit 0, idempotent):
@@ -506,9 +506,9 @@ Output (always exit 0, idempotent):
 Behavior:
 
 1. `os.kill(pid, 0)` → if ProcessLookupError: exit 0 `{stopped: false}`.
-2. Verify that the process is a `garuda-tunnel` daemon for the provided token.
+2. Verify that the process is a `tunstrap` daemon for the provided token.
    - Linux: read `/proc/<pid>/environ` and require
-     `GARUDA_TUNNEL_TOKEN=<TOKEN>`.
+     `TUNSTRAP_TOKEN=<TOKEN>`.
    - macOS: use `ps -wwE -p <pid>` and require the same environment marker
      when available. If the platform cannot verify the token, return
      `{stopped: false, reason: "identity check unavailable"}` and exit 0;
@@ -520,13 +520,13 @@ Behavior:
 6. Exit 0.
 
 The token prevents killing unrelated processes when a PID is stale, reused, or
-typed incorrectly. The daemon sets `GARUDA_TUNNEL_TOKEN` in its own process
+typed incorrectly. The daemon sets `TUNSTRAP_TOKEN` in its own process
 environment before reporting success through IPC.
 
 ### `status`
 
 ```
-$ garuda-tunnel status --pid <PID> [--token <TOKEN>]
+$ tunstrap status --pid <PID> [--token <TOKEN>]
 ```
 
 Output:
@@ -637,7 +637,7 @@ containers, each running an `iperf3 -s -B 127.0.0.1 -p 6443` listener as a
 trivial TCP target. SSH host port auto-allocated by Docker. Test pubkey
 generated per session and injected via `PUBLIC_KEY` env var.
 
-Tests (`test_*.py`) invoke `garuda-tunnel` as a **subprocess** (`subprocess.run`
+Tests (`test_*.py`) invoke `tunstrap` as a **subprocess** (`subprocess.run`
 or `subprocess.Popen`). They verify real behavior:
 
 - `test_start.py`:
@@ -676,10 +676,10 @@ def kill_orphan_test_daemons(started_daemons):
     yield
     # Kill only daemons started by this pytest process. The fixture records
     # (pid, token) pairs returned by successful `start` calls.
-    # Never use pkill -f "garuda-tunnel" because that can kill unrelated local
+    # Never use pkill -f "tunstrap" because that can kill unrelated local
     # operator processes on a developer machine.
     for pid, token in started_daemons:
-        subprocess.run(["garuda-tunnel", "stop", "--pid", str(pid), "--token", token])
+        subprocess.run(["tunstrap", "stop", "--pid", str(pid), "--token", token])
 ```
 
 Integration tests keep the `pid` and `token` returned by each production
@@ -704,7 +704,7 @@ jobs:
       - setup-python
       - pip install -e ".[dev]"
       - pytest -m "not integration"
-      - mypy --strict garuda_tunnel
+      - mypy --strict tunstrap
       - ruff check
       - ruff format --check
 
@@ -753,7 +753,7 @@ Properties:
 
 ### Distribution
 
-Primary: `pipx run --spec git+https://github.com/AlexMKX/garuda-tunnel.git@<TAG> garuda-tunnel ...`.
+Primary: `pipx run --spec git+https://github.com/AlexMKX/tunstrap.git@<TAG> tunstrap ...`.
 
 Secondary: `pipx install` for developer convenience.
 
@@ -786,7 +786,7 @@ At v1.0+ (if ever): strict SemVer.
 
 ```toml
 [project]
-name = "garuda-tunnel"
+name = "tunstrap"
 description = "SSH tunnel manager for ephemeral environments"
 authors = [{name = "Alex MKX"}]
 license = {text = "MIT"}
@@ -809,11 +809,11 @@ dev = [
 ]
 
 [project.scripts]
-garuda-tunnel = "garuda_tunnel.cli:main"
+tunstrap = "tunstrap.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/AlexMKX/garuda-tunnel"
-Issues   = "https://github.com/AlexMKX/garuda-tunnel/issues"
+Homepage = "https://github.com/AlexMKX/tunstrap"
+Issues   = "https://github.com/AlexMKX/tunstrap/issues"
 
 [build-system]
 requires      = ["hatchling", "hatch-vcs"]
@@ -823,7 +823,7 @@ build-backend = "hatchling.build"
 source = "vcs"
 
 [tool.hatch.build.hooks.vcs]
-version-file = "garuda_tunnel/_version.py"
+version-file = "tunstrap/_version.py"
 
 [tool.ruff]
 line-length    = 100
@@ -835,7 +835,7 @@ python_version = "3.10"
 
 [tool.pytest.ini_options]
 markers = ["integration: requires docker (sshd containers)"]
-addopts = "-m 'not integration' --cov=garuda_tunnel --cov-report=term-missing"
+addopts = "-m 'not integration' --cov=tunstrap --cov-report=term-missing"
 ```
 
 Note: `pytest-docker` is **not** required as a Python dependency. Tests
@@ -848,7 +848,7 @@ plugin's quirks (port binding races, fixture scoping).
 
 | Decision | Rationale |
 |---|---|
-| Separate repo, not vendored into garuda-repo | Independent versioning, public OSS reusability, decoupled CI, smaller PRs per change. |
+| Separate repo, not vendored into the consumer repo | Independent versioning, public OSS reusability, decoupled CI, smaller PRs per change. |
 | `pipx run` (ephemeral), not `pipx install` | DE-friendly: no persistent install footprint, version pin per invocation. |
 | `pahaz/sshtunnel` library | 1.3k stars, 10+ years prod use, MIT, exact use case fit; better than reinventing subprocess-based ssh -L management. |
 | `paramiko<5` pin | Upstream sshtunnel 0.4.0 hits `paramiko.DSSKey` which was removed in paramiko 5.0 (sshtunnel #302). Until upstream fix released, pin to paramiko 4.x. |

@@ -13,8 +13,8 @@ from typing import Any, Callable
 
 import asyncssh
 
-from garuda_tunnel.exceptions import TunnelStartupError
-from garuda_tunnel.schemas import NodeInput
+from tunstrap.exceptions import TunnelStartupError
+from tunstrap.schemas import NodeInput
 
 
 def _probe_local_port(host: str, port: int, timeout: float) -> bool:

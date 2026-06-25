@@ -1,8 +1,8 @@
 """CLI start input validation.
 
-Validates: garuda_tunnel/cli.py start command rejects invalid stdin and
+Validates: tunstrap/cli.py start command rejects invalid stdin and
 legacy fields with structured SchemaValidationError output.
-Code: garuda_tunnel/cli.py
+Code: tunstrap/cli.py
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import json
 import pytest
 from click.testing import CliRunner
 
-from garuda_tunnel.cli import main
+from tunstrap.cli import main
 
 pytestmark = pytest.mark.unit
 

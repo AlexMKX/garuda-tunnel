@@ -2,7 +2,7 @@
 
 Validates: minimum-valid input, required pkey-or-password invariant,
 and OutputSchema round-tripping.
-Code: garuda_tunnel/schemas.py
+Code: tunstrap/schemas.py
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from garuda_tunnel.schemas import (
+from tunstrap.schemas import (
     DaemonOptions,
     InputSchema,
     NodeInput,
@@ -61,7 +61,6 @@ def test_output_schema_round_trips() -> None:
             )
         },
         pid=12345,
-        token="abc",
         session_dir="/tmp/x",
         started_at="2026-05-16T14:30:00Z",
         warnings=[TunnelWarning(node="b", error="auth failed")],
@@ -98,3 +97,32 @@ def test_daemon_options_rejects_unknown_field() -> None:
     """extra=forbid still rejects typos (regression guard)."""
     with pytest.raises(ValidationError):
         DaemonOptions(auto_stop_idle_secunds=10)  # typo
+
+
+def test_node_kube_only_allows_empty_remote_targets() -> None:
+    """A node with kube_targets and no remote_targets is valid."""
+    schema = InputSchema.model_validate(
+        {
+            "nodes": {
+                "n": {
+                    "host": "h",
+                    "user": "u",
+                    "ssh_pkey": "k",
+                    "remote_targets": {},
+                    "kube_targets": {"k3s": {"kubeconfig_path": "/etc/k3s.yaml"}},
+                }
+            },
+        }
+    )
+    assert schema.nodes["n"].remote_targets == {}
+    assert "k3s" in schema.nodes["n"].kube_targets
+
+
+def test_node_doing_nothing_is_rejected() -> None:
+    """A node with no remote_targets, kube_targets, or fetch_files is rejected."""
+    with pytest.raises(ValidationError, match="at least one of"):
+        InputSchema.model_validate(
+            {
+                "nodes": {"n": {"host": "h", "user": "u", "ssh_pkey": "k", "remote_targets": {}}},
+            }
+        )

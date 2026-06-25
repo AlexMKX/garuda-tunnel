@@ -55,7 +55,7 @@ def _parse_host_port(value: str) -> tuple[str, int]:
 class SSHOptions(BaseModel):
     """SSH transport options reachable from public input.
 
-    Only fields actually consumed by garuda_tunnel/ssh.py::open_connection
+    Only fields actually consumed by tunstrap/ssh.py::open_connection
     and open_local_forwards. Anything else is dead config and rejected.
     """
 
@@ -173,7 +173,7 @@ class NodeInput(BaseModel):
     ssh_pkey: str | None = None
     ssh_password: str | None = None
     ssh_pkey_passphrase: str | None = None
-    remote_targets: dict[str, RemoteTarget]
+    remote_targets: dict[str, RemoteTarget] = Field(default_factory=dict)
     ssh_options: SSHOptions = Field(default_factory=SSHOptions)
     required: bool = Field(
         default=True,
@@ -189,10 +189,10 @@ class NodeInput(BaseModel):
     @field_validator("remote_targets", mode="before")
     @classmethod
     def _validate_remote_targets(cls, value: object) -> dict[str, RemoteTarget]:
+        if value is None:
+            return {}
         if not isinstance(value, dict):
             raise ValueError("remote_targets must be a dict")
-        if len(value) == 0:
-            raise ValueError("remote_targets: at least 1 entry required")
         if len(value) > 16:
             raise ValueError("remote_targets: at most 16 entries per node")
         parsed: dict[str, RemoteTarget] = {}
@@ -251,9 +251,17 @@ class NodeInput(BaseModel):
             _validate_identifier_key("kube_targets", name)
         return value
 
+    @model_validator(mode="after")
+    def _validate_node_does_something(self) -> "NodeInput":
+        if not self.remote_targets and not self.kube_targets and not self.fetch_files:
+            raise ValueError(
+                "node must define at least one of remote_targets, kube_targets, fetch_files"
+            )
+        return self
+
 
 class InputSchema(BaseModel):
-    """Top-level input read from stdin by ``garuda-tunnel start``."""
+    """Top-level input read from stdin by ``tunstrap start``."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -338,20 +346,19 @@ class TunnelWarning(BaseModel):
 
 
 class OutputSchema(BaseModel):
-    """Success envelope returned by ``garuda-tunnel start`` on stdout."""
+    """Success envelope returned by ``tunstrap start`` on stdout."""
 
     model_config = ConfigDict(extra="forbid")
 
     connections: dict[str, NodeOutput]
     pid: int
-    token: str
     session_dir: str
     started_at: str
     warnings: list[TunnelWarning] = Field(default_factory=list)
 
 
 class ErrorOutput(BaseModel):
-    """Error envelope returned by ``garuda-tunnel start`` on stdout."""
+    """Error envelope returned by ``tunstrap start`` on stdout."""
 
     model_config = ConfigDict(extra="forbid")
 

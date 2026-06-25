@@ -10,7 +10,7 @@ services:
       - PASSWORD_ACCESS=false
     volumes:
       - ./_keys:/keys:ro
-      - /tmp/garuda-tunnel-it:/srv/files:ro
+      - /tmp/tunstrap-it:/srv/files:ro
     ports:
       - "127.0.0.1::2222"
 
@@ -25,7 +25,7 @@ services:
       - PASSWORD_ACCESS=false
     volumes:
       - ./_keys:/keys:ro
-      - /tmp/garuda-tunnel-it:/srv/files:ro
+      - /tmp/tunstrap-it:/srv/files:ro
     ports:
       - "127.0.0.1::2222"
 
@@ -40,7 +40,7 @@ services:
       - PASSWORD_ACCESS=false
     volumes:
       - ./_keys:/keys:ro
-      - /tmp/garuda-tunnel-it:/srv/files:ro
+      - /tmp/tunstrap-it:/srv/files:ro
     ports:
       - "127.0.0.1::2222"
 
@@ -55,7 +55,7 @@ services:
       - PASSWORD_ACCESS=false
     volumes:
       - ./_keys:/keys:ro
-      - /tmp/garuda-tunnel-it:/srv/files:ro
+      - /tmp/tunstrap-it:/srv/files:ro
       - ./_bastion_sshd_config:/config/sshd/sshd_config.d:ro
     ports:
       - "127.0.0.1::2222"

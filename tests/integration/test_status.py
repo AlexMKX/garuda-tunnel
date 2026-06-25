@@ -1,8 +1,8 @@
-"""garuda-tunnel status against a real daemon.
+"""tunstrap status against a real daemon.
 
-Validates: alive-then-dead status transitions, plus wrong-token detection
+Validates: alive-then-dead status transitions keyed off --session-dir
 through the real CLI binary.
-Code: garuda_tunnel/cli.py::status
+Code: tunstrap/cli.py::status
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from tests.integration.conftest import garuda_tunnel_start
+from tests.integration.conftest import tunstrap_start
 
 
 pytestmark = pytest.mark.integration
@@ -21,9 +21,9 @@ pytestmark = pytest.mark.integration
 
 def test_status_alive_then_dead(
     ssh_test_cluster: dict[str, Any],
-    started_daemons: list[tuple[int, str]],
+    started_daemons: list[str],
 ) -> None:
-    """status flips from alive to dead after stop; wrong token reports not alive."""
+    """status flips from alive to dead (stale session) keyed off --session-dir."""
     payload = {
         "nodes": {
             "a": {
@@ -35,60 +35,25 @@ def test_status_alive_then_dead(
             }
         }
     }
-    outcome = garuda_tunnel_start(payload)
+    outcome = tunstrap_start(payload)
     body = outcome["json"]
     session_dir = body["session_dir"]
 
     alive = subprocess.run(
-        [
-            "garuda-tunnel",
-            "status",
-            "--pid",
-            str(body["pid"]),
-            "--token",
-            body["token"],
-            "--session-dir",
-            session_dir,
-        ],
+        ["tunstrap", "status", "--session-dir", session_dir],
         capture_output=True,
         text=True,
     )
     assert json.loads(alive.stdout)["alive"] is True
 
-    # A wrong token with the correct session-dir: the lock file for "bad"
-    # does not exist in tunnel-data/, so verify_token returns not_found → alive=False.
-    wrong = subprocess.run(
-        [
-            "garuda-tunnel",
-            "status",
-            "--pid",
-            str(body["pid"]),
-            "--token",
-            "bad",
-            "--session-dir",
-            session_dir,
-        ],
-        capture_output=True,
-        text=True,
-    )
-    assert json.loads(wrong.stdout)["alive"] is False
-
     subprocess.run(
-        ["garuda-tunnel", "stop", "--session-dir", session_dir],
+        ["tunstrap", "stop", "--session-dir", session_dir],
         capture_output=True,
     )
 
+    # Stale/dead session: the daemon is gone, so status reports not alive.
     dead = subprocess.run(
-        [
-            "garuda-tunnel",
-            "status",
-            "--pid",
-            str(body["pid"]),
-            "--token",
-            body["token"],
-            "--session-dir",
-            session_dir,
-        ],
+        ["tunstrap", "status", "--session-dir", session_dir],
         capture_output=True,
         text=True,
     )

@@ -2,7 +2,7 @@
 
 Validates: NodeInput.required defaults to True; the legacy `require`
 field on InputSchema is rejected by extra=forbid.
-Code: garuda_tunnel/schemas.py
+Code: tunstrap/schemas.py
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from garuda_tunnel.schemas import InputSchema
+from tunstrap.schemas import InputSchema
 from tests.unit.conftest import make_node
 
 pytestmark = pytest.mark.unit

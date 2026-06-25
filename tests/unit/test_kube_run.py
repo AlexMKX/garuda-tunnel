@@ -3,7 +3,7 @@
 Validates: a successful kube_target yields a KubeTargetOutput with the
 local endpoint, chosen tls_server_name, and patched content; a required
 target whose fetch fails is reported as a required failure.
-Code: garuda_tunnel/kube.py::run_kube_targets
+Code: tunstrap/kube.py::run_kube_targets
 Assertion: returned outputs carry the local port + tls name; warnings
 include the non-exact-SAN note; required failures are listed.
 Method: drive run_kube_targets with a fake connection + injected probe.
@@ -16,8 +16,8 @@ from typing import Any
 
 import pytest
 
-from garuda_tunnel.kube import run_kube_targets
-from garuda_tunnel.schemas import KubeTarget
+from tunstrap.kube import run_kube_targets
+from tunstrap.schemas import KubeTarget
 
 pytestmark = pytest.mark.unit
 
@@ -93,7 +93,7 @@ async def _probe_ok(_host: str, _port: int) -> bytes:
 async def test_run_kube_target_success(monkeypatch: pytest.MonkeyPatch) -> None:
     """A healthy kube_target yields a patched output with the local endpoint."""
     monkeypatch.setattr(
-        "garuda_tunnel.kube.sans_from_cert",
+        "tunstrap.kube.sans_from_cert",
         lambda _der: (["dev-kube-1", "192.0.2.11"], []),
     )
     conn = _FakeConn((FIXTURES / "single_internal_ip.yaml").read_bytes())
@@ -113,6 +113,6 @@ async def test_run_kube_target_success(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_default_probe_is_callable() -> None:
     """A default TLS probe is exported for production use."""
-    from garuda_tunnel.kube import default_san_probe
+    from tunstrap.kube import default_san_probe
 
     assert callable(default_san_probe)

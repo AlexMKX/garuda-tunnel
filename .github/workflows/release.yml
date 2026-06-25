@@ -30,9 +30,9 @@ jobs:
       - run: black --check .
       - run: ruff format --check .
       - run: ruff check .
-      - run: pylint garuda_tunnel/
-      - run: vulture garuda_tunnel/ vulture_whitelist.py
-      - run: mypy --strict garuda_tunnel
+      - run: pylint tunstrap/
+      - run: vulture tunstrap/ vulture_whitelist.py
+      - run: mypy --strict tunstrap
       - name: combined unit + integration coverage gate
         run: |
           coverage run -m pytest tests/unit -v

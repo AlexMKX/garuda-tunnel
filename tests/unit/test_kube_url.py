@@ -2,7 +2,7 @@
 
 Validates: _split_host_port handles https URLs, IPv6, default port, and
 rejects malformed/non-https URLs with KubeParseError.
-Code: garuda_tunnel/kube.py::_split_host_port
+Code: tunstrap/kube.py::_split_host_port
 Assertion: valid URLs return (host, port); malformed/non-https raise KubeParseError.
 Method: call _split_host_port with crafted server strings.
 """
@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-from garuda_tunnel.exceptions import KubeParseError
-from garuda_tunnel.kube import _split_host_port
+from tunstrap.exceptions import KubeParseError
+from tunstrap.kube import _split_host_port
 
 pytestmark = pytest.mark.unit
 

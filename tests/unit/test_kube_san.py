@@ -4,7 +4,7 @@ Validates: prefer the original server host; else first DNS SAN; else
 first IP SAN; empty SAN returns None. A non-exact match is flagged.
 Also validates sans_from_cert for malformed DER, absent SAN extension,
 and the normal DNS+IP extraction path.
-Code: garuda_tunnel/kube.py
+Code: tunstrap/kube.py
 Assertion: choose_tls_server_name returns the documented preference and
 a `fellback` flag indicating a non-exact match; sans_from_cert returns
 ([], []) on failure and (dns, ips) on success.
@@ -22,7 +22,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.x509.oid import NameOID
 
-from garuda_tunnel.kube import choose_tls_server_name, sans_from_cert
+from tunstrap.kube import choose_tls_server_name, sans_from_cert
 
 pytestmark = pytest.mark.unit
 

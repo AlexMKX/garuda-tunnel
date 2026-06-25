@@ -1,11 +1,12 @@
-"""Session directory: identity + optional materialized files under tunnel-data/.
+"""Session directory: session.lock + materialized files under tunnel-data/.
 
 The daemon always works inside a well-known `tunnel-data/` subdirectory of
-the session dir. When the daemon generates the session dir itself, cleanup
-removes the whole dir; when the caller supplies it, cleanup removes only
-`tunnel-data/` (the caller's directory is never touched). `--session-dir`
-is untrusted: an existing tunnel-data that is a symlink, a non-directory,
-or not owned by the current user is rejected.
+the session dir, beside a `session.lock` flock that `SessionDir` owns. When
+the daemon generates the session dir itself, cleanup removes the whole dir;
+when the caller supplies it, cleanup removes only `tunnel-data/` (the caller's
+directory is never touched). `--session-dir` is untrusted: an existing
+tunnel-data that is a symlink, a non-directory, or not owned by the current
+user is rejected.
 """
 
 from __future__ import annotations
@@ -15,6 +16,9 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from tunstrap.exceptions import SessionActive
+from tunstrap.identity import acquire_session_lock, release_session_lock
+
 _TUNNEL_DATA = "tunnel-data"
 
 
@@ -23,21 +27,24 @@ class SessionError(Exception):
 
 
 class SessionDir:
-    """Owns the tunnel-data/ subdir lifecycle for one daemon instance."""
+    """Owns session.lock + the tunnel-data/ subdir for one daemon instance."""
 
-    def __init__(self, *, session_dir: Path, generated: bool) -> None:
-        """Store the resolved session dir and whether the daemon generated it."""
+    def __init__(self, *, session_dir: Path, generated: bool, lock_fd: int) -> None:
         self.session_dir = str(session_dir)
         self._root = session_dir
         self._generated = generated
         self._data = session_dir / _TUNNEL_DATA
+        self._lock_fd = lock_fd
 
     @classmethod
     def create(cls, *, supplied: str | None, base: Path | None = None) -> "SessionDir":
-        """Resolve/validate the session dir and create tunnel-data/ (0700)."""
+        """Resolve the session dir, acquire session.lock, (re)create tunnel-data/.
+
+        Raises ``SessionActive`` if a live daemon already holds the lock.
+        """
         if supplied is None:
             parent = base if base is not None else Path(tempfile.gettempdir())
-            root = Path(tempfile.mkdtemp(prefix="garuda-tunnel-", dir=parent))
+            root = Path(tempfile.mkdtemp(prefix="tunstrap-", dir=parent))
             generated = True
         else:
             supplied_path = Path(supplied)
@@ -47,14 +54,31 @@ class SessionDir:
             root.mkdir(parents=True, exist_ok=True)
             generated = False
 
-        data = root / _TUNNEL_DATA
-        cls._validate_data_slot(data)
-        data.mkdir(mode=0o700)
-        return cls(session_dir=root, generated=generated)
+        try:
+            lock_fd = acquire_session_lock(root)
+        except BlockingIOError as exc:
+            raise SessionActive(
+                "session already active",
+                {"session_dir": str(root)},
+            ) from exc
+
+        try:
+            data = root / _TUNNEL_DATA
+            cls._reclaim_data_slot(data)
+            data.mkdir(mode=0o700)
+        except BaseException:
+            release_session_lock(lock_fd, root)
+            raise
+        return cls(session_dir=root, generated=generated, lock_fd=lock_fd)
 
     @staticmethod
-    def _validate_data_slot(data: Path) -> None:
-        """Reject a pre-existing tunnel-data that is unsafe to own."""
+    def _reclaim_data_slot(data: Path) -> None:
+        """Wipe an orphaned tunnel-data/; reject an unsafe pre-existing slot.
+
+        The caller holds the exclusive session.lock, so any existing tunnel-data
+        belongs to a dead session and is safe to remove. Symlinks, non-dirs, and
+        foreign-owned dirs are still rejected (untrusted --session-dir).
+        """
         if data.is_symlink():
             raise SessionError("tunnel-data is a symlink; refusing to follow")
         if data.exists():
@@ -62,15 +86,11 @@ class SessionDir:
                 raise SessionError("tunnel-data exists and is not a directory")
             if data.stat().st_uid != os.getuid():
                 raise SessionError("tunnel-data exists and is not owned by this user")
-            raise SessionError(
-                "tunnel-data already exists (possible orphaned session); "
-                "remove it before reusing this session dir"
-            )
+            shutil.rmtree(data)
 
-    def write_identity(self, *, pid: int, token: str) -> None:
-        """Write daemon.pid and token (mode 0600) into tunnel-data/."""
+    def write_identity(self, *, pid: int) -> None:
+        """Write daemon.pid (mode 0600) into tunnel-data/."""
         self._write_file("daemon.pid", f"{pid}\n".encode("ascii"))
-        self._write_file("token", f"{token}\n".encode("ascii"))
 
     def materialize(self, name: str, content: bytes) -> str:
         """Write `content` to tunnel-data/<name> (mode 0600); return the path."""
@@ -92,22 +112,21 @@ class SessionDir:
         return str(path)
 
     def cleanup(self) -> None:
-        """Remove tunnel-data/ (and the whole dir if we generated it). Best-effort."""
+        """Release the lock, then remove tunnel-data/ (or the whole generated dir)."""
+        release_session_lock(self._lock_fd, self._root)
         if self._generated:
             shutil.rmtree(self._root, ignore_errors=True)
         else:
             shutil.rmtree(self._data, ignore_errors=True)
 
     @staticmethod
-    def read_identity(session_dir: str) -> tuple[int, str]:
-        """Read (pid, token) from a session dir's tunnel-data/. Raises SessionError."""
+    def read_identity(session_dir: str) -> int:
+        """Read the recorded pid from a session dir's tunnel-data/daemon.pid."""
         data = Path(session_dir).resolve() / _TUNNEL_DATA
         try:
-            pid = int((data / "daemon.pid").read_text().strip())
-            token = (data / "token").read_text().strip()
+            return int((data / "daemon.pid").read_text().strip())
         except (OSError, ValueError) as exc:
             raise SessionError(f"cannot read identity from {data}: {exc}") from exc
-        return pid, token
 
     @classmethod
     def cleanup_path(cls, session_dir: str) -> None:

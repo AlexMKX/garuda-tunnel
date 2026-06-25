@@ -2,7 +2,7 @@
 
 Validates: the output models carry the extracted kube fields and the
 always-present session_dir.
-Code: garuda_tunnel/schemas.py
+Code: tunstrap/schemas.py
 Assertion: a fully-populated KubeTargetOutput round-trips; NodeOutput
 defaults kube_targets to {}; OutputSchema requires session_dir.
 Method: construct models and assert field values / required errors.
@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from garuda_tunnel.schemas import (
+from tunstrap.schemas import (
     KubeTargetOutput,
     NodeOutput,
     OutputSchema,
@@ -65,9 +65,7 @@ def test_node_output_kube_targets_defaults_empty() -> None:
 def test_output_schema_requires_session_dir() -> None:
     """OutputSchema.session_dir is required (always present)."""
     with pytest.raises(ValidationError):
-        OutputSchema.model_validate(
-            {"connections": {}, "pid": 1, "token": "t", "started_at": "now"}
-        )
+        OutputSchema.model_validate({"connections": {}, "pid": 1, "started_at": "now"})
 
 
 def test_output_schema_with_session_dir() -> None:
@@ -76,9 +74,8 @@ def test_output_schema_with_session_dir() -> None:
         {
             "connections": {},
             "pid": 1,
-            "token": "t",
             "started_at": "now",
-            "session_dir": "/run/garuda/1",
+            "session_dir": "/run/tunstrap/1",
         }
     )
-    assert schema.session_dir == "/run/garuda/1"
+    assert schema.session_dir == "/run/tunstrap/1"

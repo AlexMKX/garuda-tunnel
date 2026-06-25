@@ -1,8 +1,8 @@
 """Fetcher error classification.
 
-Validates: garuda_tunnel/fetcher.py::_classify_error maps SFTP/transport
+Validates: tunstrap/fetcher.py::_classify_error maps SFTP/transport
 exceptions to stable string labels used in OutputSchema.
-Code: garuda_tunnel/fetcher.py
+Code: tunstrap/fetcher.py
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import socket
 import asyncssh
 import pytest
 
-from garuda_tunnel.fetcher import _classify_error
+from tunstrap.fetcher import _classify_error
 
 pytestmark = pytest.mark.unit
 

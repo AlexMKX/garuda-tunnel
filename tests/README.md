@@ -22,17 +22,17 @@ This directory contains two suites:
 
 Defined in `tests/integration/conftest.py`:
 
-- `garuda_tunnel_it_dir` — session-scoped; pre-creates
-  `/tmp/garuda-tunnel-it/` with mode `0o1777` so that a docker bind-mount
+- `tunstrap_it_dir` — session-scoped; pre-creates
+  `/tmp/tunstrap-it/` with mode `0o1777` so that a docker bind-mount
   cannot lock it to root.
 - `ssh_keypair` — generates an ed25519 keypair into
   `tests/integration/_keys/`.
 - `ssh_test_cluster` — runs `docker compose up -d --wait` and returns
   the per-service exposed ports.
-- `prepared_files` — populates `/tmp/garuda-tunnel-it/{kubeconfig,
+- `prepared_files` — populates `/tmp/tunstrap-it/{kubeconfig,
   big.bin,no-perm.txt}` for `fetch_files` scenarios.
-- `started_daemons` — collects `(pid, token)` from successful start
-  invocations so the suite teardown can stop them.
+- `started_daemons` — collects `session_dir` strings from successful start
+  invocations so the suite teardown can stop them by `--session-dir`.
 
 ## Local prerequisites for integration
 

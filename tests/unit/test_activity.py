@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import asyncssh
 import pytest
 
-from garuda_tunnel.activity import ActivityTracker
+from tunstrap.activity import ActivityTracker
 
 pytestmark = pytest.mark.unit
 

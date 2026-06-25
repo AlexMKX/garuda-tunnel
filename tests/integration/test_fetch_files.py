@@ -1,9 +1,9 @@
 """Fetch-files end-to-end against dockerized sshd.
 
-Validates: garuda-tunnel start fetch_files happy path, required vs
+Validates: tunstrap start fetch_files happy path, required vs
 optional file errors, EFBIG cap, and the NodeOutput shape over the
 real CLI process.
-Code: garuda_tunnel/manager.py, garuda_tunnel/fetcher.py
+Code: tunstrap/manager.py, tunstrap/fetcher.py
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from tests.integration.conftest import garuda_tunnel_start
+from tests.integration.conftest import tunstrap_start
 
 
 pytestmark = pytest.mark.integration
@@ -43,7 +43,7 @@ def _node_with_fetch(
 def test_fetch_single_file_roundtrip(
     ssh_test_cluster: dict[str, Any],
     prepared_files: dict[str, Path],
-    started_daemons: list[tuple[int, str]],
+    started_daemons: list[str],
 ) -> None:
     """A single fetched file returns identical bytes, size, and sha256."""
     payload = {
@@ -56,10 +56,10 @@ def test_fetch_single_file_roundtrip(
             )
         }
     }
-    outcome = garuda_tunnel_start(payload)
+    outcome = tunstrap_start(payload)
     assert outcome["returncode"] == 0, outcome["stderr"]
     body = outcome["json"]
-    started_daemons.append((body["pid"], body["token"]))
+    started_daemons.append(body["session_dir"])
 
     node_out = body["connections"]["a"]
     assert "ports" in node_out
@@ -87,7 +87,7 @@ def test_fetch_required_missing_fails_node(
             )
         }
     }
-    outcome = garuda_tunnel_start(payload)
+    outcome = tunstrap_start(payload)
     assert outcome["returncode"] == 2
     body = outcome["json"]
     assert body["error"] == "RequiredTunnelFailure"
@@ -96,7 +96,7 @@ def test_fetch_required_missing_fails_node(
 def test_fetch_optional_missing_soft_fails(
     ssh_test_cluster: dict[str, Any],
     prepared_files: dict[str, Path],
-    started_daemons: list[tuple[int, str]],
+    started_daemons: list[str],
 ) -> None:
     """Missing optional file is reported as SSH_FX_NO_SUCH_FILE; tunnel starts."""
     payload = {
@@ -112,10 +112,10 @@ def test_fetch_optional_missing_soft_fails(
             )
         }
     }
-    outcome = garuda_tunnel_start(payload)
+    outcome = tunstrap_start(payload)
     assert outcome["returncode"] == 0, outcome["stderr"]
     body = outcome["json"]
-    started_daemons.append((body["pid"], body["token"]))
+    started_daemons.append(body["session_dir"])
     ff = body["connections"]["a"]["fetch_files"]
     assert ff["kubeconfig"]["content_b64"]
     assert ff["absent"]["error"] == "SSH_FX_NO_SUCH_FILE"
@@ -136,7 +136,7 @@ def test_fetch_perm_denied_required_fails(
             )
         }
     }
-    outcome = garuda_tunnel_start(payload)
+    outcome = tunstrap_start(payload)
     assert outcome["returncode"] == 2
     body = outcome["json"]
     assert body["error"] == "RequiredTunnelFailure"
@@ -158,7 +158,7 @@ def test_fetch_over_cap_efbig_required(
             )
         }
     }
-    outcome = garuda_tunnel_start(payload)
+    outcome = tunstrap_start(payload)
     assert outcome["returncode"] == 2
     body = outcome["json"]
     assert body["error"] == "RequiredTunnelFailure"
@@ -168,7 +168,7 @@ def test_fetch_over_cap_efbig_required(
 def test_fetch_over_cap_efbig_optional(
     ssh_test_cluster: dict[str, Any],
     prepared_files: dict[str, Path],
-    started_daemons: list[tuple[int, str]],
+    started_daemons: list[str],
 ) -> None:
     """Optional file exceeding the EFBIG cap is recorded as soft error."""
     payload = {
@@ -181,10 +181,10 @@ def test_fetch_over_cap_efbig_optional(
             )
         }
     }
-    outcome = garuda_tunnel_start(payload)
+    outcome = tunstrap_start(payload)
     assert outcome["returncode"] == 0, outcome["stderr"]
     body = outcome["json"]
-    started_daemons.append((body["pid"], body["token"]))
+    started_daemons.append(body["session_dir"])
     ff = body["connections"]["a"]["fetch_files"]
     assert ff["big"]["error"] == "EFBIG"
 
@@ -192,7 +192,7 @@ def test_fetch_over_cap_efbig_optional(
 def test_fetch_multiple_files_mixed(
     ssh_test_cluster: dict[str, Any],
     prepared_files: dict[str, Path],
-    started_daemons: list[tuple[int, str]],
+    started_daemons: list[str],
 ) -> None:
     """Mixed required-ok + optional-missing + optional-too-big all coexist."""
     payload = {
@@ -209,10 +209,10 @@ def test_fetch_multiple_files_mixed(
             )
         }
     }
-    outcome = garuda_tunnel_start(payload)
+    outcome = tunstrap_start(payload)
     assert outcome["returncode"] == 0
     body = outcome["json"]
-    started_daemons.append((body["pid"], body["token"]))
+    started_daemons.append(body["session_dir"])
     ff = body["connections"]["a"]["fetch_files"]
     assert ff["kubeconfig"]["content_b64"]
     assert ff["absent"]["error"] == "SSH_FX_NO_SUCH_FILE"
@@ -222,7 +222,7 @@ def test_fetch_multiple_files_mixed(
 def test_fetch_files_breaking_shape(
     ssh_test_cluster: dict[str, Any],
     prepared_files: dict[str, Path],
-    started_daemons: list[tuple[int, str]],
+    started_daemons: list[str],
 ) -> None:
     """Successful start emits exactly {ports, fetch_files} per node."""
     payload = {
@@ -235,10 +235,10 @@ def test_fetch_files_breaking_shape(
             )
         }
     }
-    outcome = garuda_tunnel_start(payload)
+    outcome = tunstrap_start(payload)
     assert outcome["returncode"] == 0
     body = outcome["json"]
-    started_daemons.append((body["pid"], body["token"]))
+    started_daemons.append(body["session_dir"])
     node_out = body["connections"]["a"]
     assert isinstance(node_out, dict)
     assert set(node_out.keys()) == {"ports", "fetch_files", "kube_targets"}
