@@ -260,9 +260,11 @@ def test_start_invalid_json_returns_one() -> None:
     assert out["error"] == "SchemaValidationError"
 
 
-def test_start_schema_violation_returns_one() -> None:
+def test_start_schema_violation_returns_one(monkeypatch: pytest.MonkeyPatch) -> None:
     """start with a JSON object that fails InputSchema returns exit 1."""
     # Node without ssh_pkey/ssh_password triggers the cross-field validator.
+    # Ensure SSH_AUTH_SOCK is absent so the schema correctly rejects the node.
+    monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
     payload = json.dumps(
         {"nodes": {"a": {"host": "h", "user": "u", "remote_targets": {"p": "127.0.0.1:22"}}}}
     )

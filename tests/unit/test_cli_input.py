@@ -92,3 +92,21 @@ def test_build_ip_literal_host():
     )
     assert "node" in schema.nodes
     assert schema.nodes["node"].host == "127.0.0.1"
+
+
+def test_build_agent_fallback_no_key_no_password(monkeypatch):
+    """build_single_node_schema accepts no key/password when SSH_AUTH_SOCK is set."""
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/dummy-agent.sock")
+    schema = build_single_node_schema(
+        connection="root@edge1:22",
+        ssh_key=None,
+        ssh_key_passphrase=None,
+        ssh_password=None,
+        targets=("api=127.0.0.1:6443",),
+        kube=(),
+        fetch=(),
+        daemon_opts=DaemonOptions(),
+    )
+    node = schema.nodes["node"]
+    assert node.ssh_pkey is None
+    assert node.ssh_password is None
