@@ -137,6 +137,8 @@ tunstrap start root@edge1.example.net \
   `fetch_files`.
 - Auth: `--ssh-key <file>` (optionally `--ssh-key-passphrase`) **or**
   `--ssh-password-stdin` (the password is read from the first stdin line).
+  When neither flag is given, tunstrap uses keys from the running ssh-agent
+  (via `$SSH_AUTH_SOCK`).
 - Daemon knobs: `--auto-stop-idle-seconds`, `--materialize`, `--log-file`,
   `--session-dir`.
 
