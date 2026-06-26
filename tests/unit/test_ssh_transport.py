@@ -1,16 +1,16 @@
-"""Unit tests for ssh.open_local_forwards (handle-keyed remote_targets)."""
+"""Unit tests for ssh.open_local_forwards and ssh.open_connection kwargs."""
 
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncssh
 import pytest
 
 from tunstrap.exceptions import TunnelStartupError
 from tunstrap.schemas import InputSchema
-from tunstrap.ssh import open_local_forwards
+from tunstrap.ssh import open_connection, open_local_forwards
 
 pytestmark = pytest.mark.unit
 
@@ -151,3 +151,38 @@ async def test_forward_local_port_receives_tracker_factory(
     await open_local_forwards(conn, node, tracker_factory=sentinel)
 
     assert received_tracker_factory == [sentinel]
+
+
+@pytest.mark.asyncio
+async def test_open_connection_agent_fallback_omits_client_keys_and_password(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When no pkey/password and SSH_AUTH_SOCK is set, open_connection must NOT pass
+    client_keys or password — letting asyncssh discover the agent itself."""
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/dummy-agent.sock")
+    schema = InputSchema.model_validate(
+        {
+            "nodes": {
+                "a": {
+                    "host": "127.0.0.1",
+                    "user": "tester",
+                    "remote_targets": {"p": "127.0.0.1:6443"},
+                }
+            }
+        }
+    )
+    node = schema.nodes["a"]
+    assert node.ssh_pkey is None
+    assert node.ssh_password is None
+
+    captured_kwargs: dict[str, Any] = {}
+
+    async def fake_connect(**kwargs: Any) -> MagicMock:
+        captured_kwargs.update(kwargs)
+        return MagicMock(spec=asyncssh.SSHClientConnection)
+
+    with patch("tunstrap.ssh.asyncssh.connect", side_effect=fake_connect):
+        await open_connection(node)
+
+    assert "client_keys" not in captured_kwargs
+    assert "password" not in captured_kwargs

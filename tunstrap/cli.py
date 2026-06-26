@@ -58,7 +58,15 @@ def main() -> None:
 def _connection_options(func: _FC) -> _FC:
     """Attach the shared single-node connection flags to a command."""
     decorators = [
-        click.option("--ssh-key", "ssh_key", default=None, help="Path to a private key file."),
+        click.option(
+            "--ssh-key",
+            "ssh_key",
+            default=None,
+            help=(
+                "Path to a private key file. If omitted and --ssh-password-stdin is not used,"
+                " keys from $SSH_AUTH_SOCK (ssh-agent) are used."
+            ),
+        ),
         click.option("--ssh-key-passphrase", "ssh_key_passphrase", default=None),
         click.option("--ssh-password-stdin", "ssh_password_stdin", is_flag=True, default=False),
         click.option("--target", "targets", multiple=True, metavar="NAME=HOST:PORT"),

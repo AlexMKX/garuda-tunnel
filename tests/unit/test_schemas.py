@@ -34,12 +34,22 @@ def test_valid_minimum_input_parses() -> None:
     assert isinstance(schema.nodes["a"].ssh_options, SSHOptions)
 
 
-def test_node_requires_pkey_or_password() -> None:
-    """A node with neither ssh_pkey nor ssh_password is rejected."""
+def test_node_requires_pkey_or_password_without_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A node with neither ssh_pkey nor ssh_password is rejected when SSH_AUTH_SOCK is absent."""
+    monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
     payload = {"nodes": {"a": {"host": "h", "user": "u", "remote_targets": {"p": "127.0.0.1:22"}}}}
     with pytest.raises(ValidationError) as excinfo:
         InputSchema.model_validate(payload)
-    assert "ssh_pkey or ssh_password" in str(excinfo.value)
+    assert "ssh-agent" in str(excinfo.value)
+
+
+def test_node_accepts_neither_pkey_nor_password_with_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A node with neither ssh_pkey nor ssh_password is accepted when SSH_AUTH_SOCK is set."""
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/dummy-agent.sock")
+    payload = {"nodes": {"a": {"host": "h", "user": "u", "remote_targets": {"p": "127.0.0.1:22"}}}}
+    schema = InputSchema.model_validate(payload)
+    assert schema.nodes["a"].ssh_pkey is None
+    assert schema.nodes["a"].ssh_password is None
 
 
 def test_missing_required_host_fails() -> None:

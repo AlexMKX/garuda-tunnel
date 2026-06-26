@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
 
@@ -274,7 +275,11 @@ class InputSchema(BaseModel):
         for name, node in value.items():
             _validate_identifier_key("node", name)
             if not node.ssh_pkey and not node.ssh_password:
-                raise ValueError(f"node {name!r}: must provide ssh_pkey or ssh_password")
+                if not os.environ.get("SSH_AUTH_SOCK"):
+                    raise ValueError(
+                        f"node {name!r}: provide ssh_pkey, ssh_password, or run ssh-agent"
+                        " (SSH_AUTH_SOCK)"
+                    )
         return value
 
 

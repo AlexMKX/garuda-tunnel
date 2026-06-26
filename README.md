@@ -137,6 +137,8 @@ tunstrap start root@edge1.example.net \
   `fetch_files`.
 - Auth: `--ssh-key <file>` (optionally `--ssh-key-passphrase`) **or**
   `--ssh-password-stdin` (the password is read from the first stdin line).
+  When neither flag is given, tunstrap uses keys from the running ssh-agent
+  (via `$SSH_AUTH_SOCK`).
 - Daemon knobs: `--auto-stop-idle-seconds`, `--materialize`, `--log-file`,
   `--session-dir`.
 
@@ -211,7 +213,7 @@ session already holds the requested `--session-dir`), or `4` (daemon error);
 | `port` | `int` | `22` | Remote SSH port |
 | `user` | `str` | required | Remote SSH user |
 | `ssh_pkey` | `str \| null` | `null` | PEM-encoded private key (in-memory, never written) |
-| `ssh_password` | `str \| null` | `null` | Password fallback. Either `ssh_pkey` or `ssh_password` must be set. |
+| `ssh_password` | `str \| null` | `null` | Password fallback. If neither `ssh_pkey` nor `ssh_password` is set, keys from `$SSH_AUTH_SOCK` (ssh-agent) are used; if the agent is also unavailable, schema validation fails. |
 | `ssh_pkey_passphrase` | `str \| null` | `null` | Optional passphrase for `ssh_pkey` |
 | `remote_targets` | `dict[str, str] \| null` | `null` | Up to 16 entries; each value is `"host:port"`. Host is resolved on the SSH server side, enabling bastion-style cross-host forwards. |
 | `ssh_options.compression` | `bool` | `false` | Enable SSH compression |
